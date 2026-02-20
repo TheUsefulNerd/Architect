@@ -3,7 +3,7 @@ LangGraph state definitions for the multi-agent orchestration system.
 State is passed between agents and maintains the workflow context.
 """
 from typing import TypedDict, List, Dict, Any, Optional, Annotated
-from langgraph.graph import add_messages
+from langgraph.graph.message import add_messages
 from app.models.schemas import Phase
 
 
@@ -107,7 +107,7 @@ class StateTransitions:
     def should_move_to_librarian(state: AgentState) -> bool:
         """Check if we should transition from Planner to Librarian."""
         return (
-            state["current_phase"] == Phase.PLANNER
+            (state["current_phase"] == Phase.PLANNER or state["current_phase"] == Phase.LIBRARIAN)
             and state.get("tech_stack") is not None
             and len(state.get("tech_stack", {})) > 0
             and not state.get("needs_clarification", False)
@@ -117,7 +117,7 @@ class StateTransitions:
     def should_move_to_mentor(state: AgentState) -> bool:
         """Check if we should transition from Librarian to Mentor."""
         return (
-            state["current_phase"] == Phase.LIBRARIAN
+            (state["current_phase"] == Phase.LIBRARIAN or state["current_phase"] == Phase.MENTOR)
             and len(state.get("documentation_links", [])) > 0
             and not state.get("needs_clarification", False)
         )
