@@ -273,10 +273,7 @@ docs/_build/
 site/
 
 
-# Documentation and Setup
-docs/database_setup.sql
-docs/poetry_setup.md
-docs/supabase_setup.md
+
 
 # Project Overview
 PROJECT_OVERVIEW.md

@@ -27,7 +27,7 @@ Architect uses a **Socratic Loop** methodology to guide users through system des
 
 ## 🛠️ Tech Stack
 
-### Frontend
+### Frontend - Yet to Develop
 - **Framework**: Next.js 15 (App Router)
 - **Styling**: Tailwind CSS
 - **Icons**: Lucide React
@@ -42,7 +42,7 @@ Architect uses a **Socratic Loop** methodology to guide users through system des
 - **Vector Database**: Qdrant Cloud (semantic search, embeddings)
 - **Relational Database**: Supabase (PostgreSQL)
 
-### Infrastructure
+### Infrastructure - Yet to Work on
 - **Cloud Platform**: Google Cloud Platform (GCP)
   - Cloud Run (serverless containers)
   - Artifact Registry (container images)
@@ -60,20 +60,57 @@ Architect uses a **Socratic Loop** methodology to guide users through system des
 
 ```
 architect/
-├── backend/              # FastAPI + LangGraph backend
+│
+├── 📄 README.md                  # Main project documentation
+├── 📄 QUICKSTART.md              # Step-by-step setup guide
+│
+├── 🐍 backend/
+│   ├── 📄 README.md              # Backend documentation
+│   ├── 📄 pyproject.toml         # Poetry dependencies
+│   ├── 📄 .env.example           # Environment variables template
+│   ├── 📄 .gitignore
+│   │
 │   ├── app/
-│   │   ├── agents/      # Planner, Librarian, Mentor agents
-│   │   ├── services/    # LLM, Vector DB, Database services
-│   │   ├── models/      # Pydantic models and state definitions
-│   │   └── api/         # FastAPI routes and WebSocket
-│   └── tests/
-├── frontend/             # Next.js 15 frontend
-│   └── (to be built)
-├── infrastructure/       # Terraform and Docker configs
-│   ├── terraform/
-│   └── docker/
-├── .github/workflows/    # CI/CD pipelines
-└── docs/                # Documentation
+│   │   ├── 📄 config.py          # Settings management
+│   │   ├── 📄 main.py            # FastAPI
+│   │   │
+│   │   ├── agents/               # 🤖 LangGraph agents
+│   │   │   ├── planner.py        # Phase I: Planner 
+│   │   │   ├── librarian.py      # Phase II: Librarian 
+│   │   │   ├── mentor.py         # Phase III: Mentor 
+│   │   │   └── graph.py          # LangGraph orchestration 
+│   │   │
+│   │   ├── services/             # 🛠️ Business logic
+│   │   │   ├── llm_service.py    # Gemini/Groq integration 
+│   │   │   ├── vector_service.py # Qdrant operations 
+│   │   │   ├── db_service.py     # Supabase operations 
+│   │   │   └── crawler_service.py# Web scraping 
+│   │   │
+│   │   ├── models/               #  Data structures
+│   │   │   ├── schemas.py        #  Pydantic models 
+│   │   │   └── state.py          #  LangGraph state 
+│   │   │
+│   │   ├── api/                  #  FastAPI routes
+│   │   │   ├── routes.py         #  API endpoints 
+│   │   │   └── websocket.py      #  Real-time updates (to build)
+│   │   │
+│   │   └── utils/                # 🔧 Helpers  (to build)
+│   │
+│   └── tests/                    # 🧪 Unit tests  (to build)
+│
+├── 🎨 frontend/                  # Next.js 15 (Phase 2)
+│   └── (to be built later)
+│
+├── ☁️ infrastructure/
+│   ├── terraform/                # IaC configs (Phase 3)
+│   └── docker/                   # Container configs (Phase 3)
+│
+├── 🔄 .github/workflows/         # CI/CD pipelines (Phase 3)
+│
+└── 📚 docs/
+    ├── 📄 database_setup.sql     #  Supabase schema 
+    ├── 📄 supabase_setup.md      #  Supabase guide 
+    └── 📄 poetry_setup.md        #  Poetry guide 
 ```
 
 ## 🚀 Getting Started
@@ -159,28 +196,4 @@ poetry run mypy app/
 4. **Clean Code**: Proper formatting and documentation
 5. **Stable Structure**: Single file structure, maintained consistently
 
-## 🔮 Roadmap
 
-- [x] Project structure and setup
-- [x] Database schema design (Supabase + Qdrant)
-- [ ] LangGraph multi-agent implementation
-  - [ ] Planner agent
-  - [ ] Librarian agent (web crawler)
-  - [ ] Mentor agent
-- [ ] FastAPI endpoints and WebSocket
-- [ ] Frontend with Next.js 15
-- [ ] React Flow integration
-- [ ] GCP deployment with Terraform
-- [ ] CI/CD with GitHub Actions
-
-## 🤝 Contributing
-
-This is a collaborative project. Contributions welcome!
-
-## 📝 License
-
-(To be determined)
-
----
-
-Built with ❤️ using AI-powered orchestration
