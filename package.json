@@ -1,0 +1,13 @@
+{
+  "name": "architect",
+  "version": "1.0.0",
+  "scripts": {
+    "dev": "concurrently --names \"BACKEND,FRONTEND\" --prefix-colors \"cyan,magenta\" --kill-others-on-fail \"npm run backend\" \"npm run frontend\"",
+    "backend": "cd backend && poetry run uvicorn app.main:app --reload > ../logs/backend.log 2>&1",
+    "frontend": "cd frontend && npm run dev",
+    "logs": "type logs\\backend.log"
+  },
+  "devDependencies": {
+    "concurrently": "*"
+  }
+}
