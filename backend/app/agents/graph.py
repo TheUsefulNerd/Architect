@@ -184,27 +184,34 @@ async def run_graph_stream(
     user_input: str,
     existing_state: dict = None,
 ):
-    """
-    Stream the Architect graph execution, yielding state after each node.
+    # Always start from a proper initial state
+    state = create_initial_state(session_id, user_input)
 
-    Args:
-        session_id:     The session identifier
-        user_input:     The user's latest message
-        existing_state: Previously persisted state
-
-    Yields:
-        Partial state updates after each node completes
-    """
-    if existing_state:
-        state = {**existing_state, "user_input": user_input}
-    else:
-        state = create_initial_state(session_id, user_input)
+    # Merge existing state on top if we have real data
+    if existing_state and existing_state.get("current_phase"):
+        state = {
+            "session_id": session_id,
+            "current_phase": existing_state.get("current_phase", Phase.PLANNER),
+            "messages": existing_state.get("messages", []),
+            "user_input": user_input,
+            "requirements": existing_state.get("requirements"),
+            "architecture": existing_state.get("architecture"),
+            "tech_stack": existing_state.get("tech_stack", {}),
+            "identified_technologies": existing_state.get("identified_technologies", []),
+            "documentation_links": existing_state.get("documentation_links", []),
+            "code_scaffolds": existing_state.get("code_scaffolds", []),
+            "implementation_hints": existing_state.get("implementation_hints", []),
+            "iteration_count": existing_state.get("iteration_count", 0),
+            "error_message": None,
+            "needs_clarification": existing_state.get("needs_clarification", False),
+            "workflow_complete": existing_state.get("workflow_complete", False),
+            "metadata": existing_state.get("metadata", {})
+        }
 
     logger.info(f"[Graph] Streaming — session={session_id}")
 
     try:
         async for chunk in architect_graph.astream(state):
-            # chunk is {node_name: partial_state}
             for node_name, partial_state in chunk.items():
                 logger.info(f"[Graph] Node completed: {node_name}")
                 yield {

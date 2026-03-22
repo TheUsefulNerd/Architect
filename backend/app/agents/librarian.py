@@ -218,28 +218,6 @@ def _build_librarian_response(
     synthesis: str,
     docs: list[dict],
 ) -> str:
-    """Build the final response message for the user."""
-
-    # Build sources list
-    sources_section = "\n\n---\n### 📎 Sources\n"
-    seen_urls: set[str] = set()
-    source_index = 1
-
-    for doc in docs:
-        url = doc.get("doc_url", "")
-        if url and url not in seen_urls:
-            sources_section += f"[{source_index}] **{doc.get('tech_name')}** — {doc.get('section_title', 'Documentation')}\n"
-            sources_section += f"  🔗 {url}\n"
-            seen_urls.add(url)
-            source_index += 1
-
-    return f"""📚 **Documentation Research Complete**
-
-I've found and analyzed documentation for: **{', '.join(techs)}**
-
-{synthesis}
-{sources_section}
-
----
-✅ Handing off to the **Mentor** to generate your project scaffolding and implementation hints!
-"""
+    """Minimal chat message —  Documentation Links are in the Docs tab."""
+    doc_count = len({doc.get("doc_url") for doc in docs if doc.get("doc_url")})
+    return f"📚 Found {doc_count} documentation sources. Check the **Docs tab** to review them."

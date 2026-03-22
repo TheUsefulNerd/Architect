@@ -4,7 +4,7 @@
  */
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, useMemo } from "react";
 import { createClient } from "@/lib/supabase/client";
 import type { User, Session } from "@supabase/supabase-js";
 
@@ -21,7 +21,8 @@ export function useAuth() {
     loading: true,
   });
 
-  const supabase = createClient();
+  // Memoize client to avoid recreation on every render
+  const supabase = useMemo(() => createClient(), []);
 
   useEffect(() => {
     // Get initial session
@@ -45,7 +46,7 @@ export function useAuth() {
     );
 
     return () => listener.subscription.unsubscribe();
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [supabase]);
 
   const signOut = async () => {
     await supabase.auth.signOut();

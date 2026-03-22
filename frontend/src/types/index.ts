@@ -160,3 +160,17 @@ export interface AppUser {
   avatarUrl?: string;
   fullName?: string;
 }
+
+// ─── Roadmap Types ────────────────────────────────────────────────────────────
+
+export type RoadmapComplexity = "simple" | "medium" | "complex";
+
+export interface RoadmapStep {
+  title: string;
+  complexity: RoadmapComplexity;
+  completed?: boolean;
+}
+
+// ─── Tab Types ────────────────────────────────────────────────────────────────
+
+export type WorkspaceTab = "chat" | "docs" | "code";

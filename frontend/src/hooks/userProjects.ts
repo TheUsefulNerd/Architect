@@ -28,7 +28,7 @@ export function useProjects() {
 
   useEffect(() => {
     fetchProjects();
-  }, [fetchProjects]);
+  }, []); // Empty dependency array - only fetch once on mount
 
   const createProject = async (data: ProjectCreateRequest) => {
     const project = await projectsApi.create(data);

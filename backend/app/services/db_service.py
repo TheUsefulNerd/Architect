@@ -55,6 +55,18 @@ class DatabaseService:
         except Exception as e:
             logger.error(f"Error fetching project {project_id}: {e}")
             return None
+    
+    async def list_projects(self) -> list[dict]:
+        """Fetch all projects ordered by created_at descending."""
+        try:
+            response = self.client.table("projects")\
+                .select("*")\
+                .order("created_at", desc=True)\
+                .execute()
+            return response.data
+        except Exception as e:
+            logger.error(f"Error listing projects: {e}")
+            return []
 
     # ------------------------------------------------------------------
     # SESSIONS
@@ -84,6 +96,20 @@ class DatabaseService:
             return response.data
         except Exception as e:
             logger.error(f"Error fetching session {session_id}: {e}")
+            return None
+        
+    async def get_session_by_project(self, project_id: str) -> Optional[dict]:
+        """Fetch the most recent session for a project."""
+        try:
+            response = self.client.table("sessions")\
+                .select("*")\
+                .eq("project_id", project_id)\
+                .order("created_at", desc=True)\
+                .limit(1)\
+                .execute()
+            return response.data[0] if response.data else None
+        except Exception as e:
+            logger.error(f"Error fetching session for project {project_id}: {e}")
             return None
 
     async def update_session_phase(self, session_id: str, phase: str) -> dict:
@@ -247,15 +273,15 @@ class DatabaseService:
         session_id: str,
         scaffolds: list[dict]
     ) -> list[dict]:
-        """
-        Bulk save code scaffolds from the Mentor agent.
-
-        Each scaffold dict should have:
-            - file_path: str
-            - content: str
-            - hints: list[str]
-        """
+        """Save code scaffolds — replaces any existing scaffolds for this session."""
         try:
+            # Delete existing scaffolds for this session first
+            self.client.table("code_scaffolds")\
+                .delete()\
+                .eq("session_id", session_id)\
+                .execute()
+
+            # Insert new scaffolds
             records = [
                 {
                     "session_id": session_id,

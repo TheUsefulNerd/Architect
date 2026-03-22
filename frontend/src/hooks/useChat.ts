@@ -1,24 +1,30 @@
 /**
  * useChat Hook
- * Manages chat state, message sending, and WebSocket streaming.
+ * Manages chat state and message sending via SSE streaming.
+ * Populates docs and scaffolds store when respective agents complete.
  */
 "use client";
 
-import { useCallback, useRef } from "react";
-import { createClient } from "@/lib/supabase/client";
-import { chatApi, createChatWebSocket } from "@/lib/api";
+import { useCallback } from "react";
+import { chatApi, sessionsApi } from "@/lib/api";
 import { useProjectStore } from "@/stores/useProjectStore";
-import type { ChatRequest, MessageResponse } from "@/types";
+import type { MessageResponse, Phase, RoadmapStep} from "@/types";
+
+function normalisePhase(raw: string | undefined): Phase | null {
+  if (!raw) return null;
+  const val = raw.toLowerCase();
+  if (val.includes("planner"))   return "planner";
+  if (val.includes("librarian")) return "librarian";
+  if (val.includes("mentor"))    return "mentor";
+  return null;
+}
 
 export function useChat() {
-  const wsRef = useRef<WebSocket | null>(null);
-  const supabase = createClient();
-
   const sendMessage = useCallback(async (content: string) => {
     const { activeSession } = useProjectStore.getState();
     if (!activeSession) throw new Error("No active session");
 
-    // Optimistically add the user message
+    // Optimistically add user message
     const userMessage: MessageResponse = {
       id:         crypto.randomUUID(),
       session_id: activeSession.id,
@@ -29,105 +35,115 @@ export function useChat() {
       created_at: new Date().toISOString(),
     };
     useProjectStore.getState().appendMessage(userMessage);
-
-    try {
-      const { data } = await supabase.auth.getSession();
-      const token = data.session?.access_token;
-
-      if (token) {
-        await streamMessage(activeSession.id, content, token);
-      } else {
-        await restMessage({ session_id: activeSession.id, message: content });
-      }
-    } catch {
-      // Fallback to REST if WebSocket fails
-      await restMessage({ session_id: activeSession.id, message: content });
-    }
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
-
-  const streamMessage = async (
-    sessionId: string,
-    content: string,
-    token: string
-  ) => {
-    return new Promise<void>((resolve, reject) => {
-      const ws = createChatWebSocket(sessionId, token);
-      wsRef.current = ws;
-      useProjectStore.getState().setStreaming(true);
-      useProjectStore.getState().clearStreamingContent();
-
-      ws.onopen = () => {
-        ws.send(JSON.stringify({ message: content }));
-      };
-
-      ws.onmessage = (event) => {
-        try {
-          const chunk = JSON.parse(event.data);
-          if (chunk.type === "text") {
-            useProjectStore.getState().appendStreamChunk(chunk.content as string);
-          } else if (chunk.type === "phase_change") {
-            useProjectStore.getState().setCurrentPhase(chunk.content as never);
-          } else if (chunk.type === "done") {
-            finaliseStream();
-            resolve();
-          } else if (chunk.type === "error") {
-            reject(new Error(chunk.content as string));
-          }
-        } catch {
-          useProjectStore.getState().appendStreamChunk(event.data as string);
-        }
-      };
-
-      ws.onerror = () => reject(new Error("WebSocket error"));
-      ws.onclose = () => {
-        finaliseStream();
-        resolve();
-      };
-    });
-  };
-
-  const finaliseStream = () => {
-    const { streamingContent, activeSession } = useProjectStore.getState();
-    if (streamingContent) {
-      const assistantMessage: MessageResponse = {
-        id:         crypto.randomUUID(),
-        session_id: activeSession?.id ?? "",
-        role:       "assistant",
-        content:    streamingContent,
-        phase:      activeSession?.current_phase,
-        metadata:   {},
-        created_at: new Date().toISOString(),
-      };
-      useProjectStore.getState().appendMessage(assistantMessage);
-      useProjectStore.getState().clearStreamingContent();
-    }
-    useProjectStore.getState().setStreaming(false);
-  };
-
-  const restMessage = async (data: ChatRequest) => {
     useProjectStore.getState().setStreaming(true);
-    try {
-      const response = await chatApi.send(data);
-      const assistantMessage: MessageResponse = {
-        id:         response.message_id,
-        session_id: data.session_id,
-        role:       "assistant",
-        content:    response.response,
-        phase:      response.phase,
-        metadata:   response.metadata,
-        created_at: new Date().toISOString(),
-      };
-      useProjectStore.getState().appendMessage(assistantMessage);
-      useProjectStore.getState().setCurrentPhase(response.phase);
-    } finally {
-      useProjectStore.getState().setStreaming(false);
-    }
-  };
+    useProjectStore.getState().clearStreamingContent();
 
-  const disconnect = useCallback(() => {
-    wsRef.current?.close();
-    wsRef.current = null;
+    // Track which nodes have completed to fetch their data
+    const completedNodes = new Set<string>();
+
+    try {
+      await chatApi.stream(
+        { session_id: activeSession.id, message: content },
+
+        // onChunk
+        async (chunk, phase, node) => {
+          useProjectStore.getState().appendStreamChunk(chunk);
+
+          const normPhase = normalisePhase(phase);
+          if (normPhase) {
+            useProjectStore.getState().setCurrentPhase(normPhase);
+          }
+
+          // When a node completes, fetch its output data
+          if (node && !completedNodes.has(node)) {
+            completedNodes.add(node);
+
+            if (node === "librarian") {
+              // Fetch and store docs
+              try {
+                const docs = await sessionsApi.getDocLinks(activeSession.id);
+                useProjectStore.getState().setDocLinks(docs);
+                // Switch to docs tab to notify user
+                useProjectStore.getState().setActiveTab("docs");
+                // Switch back to chat after a moment
+                setTimeout(() => {
+                  useProjectStore.getState().setActiveTab("chat");
+                }, 2000);
+              } catch {
+                // Silently fail — docs tab will just be empty
+              }
+            }
+
+            if (node === "mentor") {
+              // Fetch and store scaffolds
+              try {
+                const scaffolds = await sessionsApi.getScaffolds(activeSession.id);
+                useProjectStore.getState().setScaffolds(scaffolds);
+              } catch {
+                // Silently fail — code tab will just be empty
+              }
+            }
+          }
+        },
+
+        // onDone
+        async () => {
+          const { streamingContent, activeSession: session } =
+            useProjectStore.getState();
+
+          if (streamingContent) {
+            const assistantMessage: MessageResponse = {
+              id:         crypto.randomUUID(),
+              session_id: session?.id ?? "",
+              role:       "assistant",
+              content:    streamingContent,
+              phase:      session?.current_phase,
+              metadata:   {},
+              created_at: new Date().toISOString(),
+            };
+            useProjectStore.getState().appendMessage(assistantMessage);
+            useProjectStore.getState().clearStreamingContent();
+          }
+          useProjectStore.getState().setStreaming(false);
+
+          // After stream completes, fetch roadmap from persisted session
+          if (session) {
+            try {
+              await new Promise(resolve => setTimeout(resolve, 500));
+              const sessionData = await sessionsApi.getById(session.id);
+              const graphState = sessionData?.metadata?.graph_state as Record<string, unknown> | undefined;
+              const roadmap = (graphState?.roadmap as RoadmapStep[]) ?? [];
+              if (roadmap.length > 0) {
+                useProjectStore.getState().setRoadmap(roadmap);
+              }
+            } catch {
+              // Silently fail
+            }
+          }
+        },
+      );
+    } catch {
+      try {
+        const response = await chatApi.send({
+          session_id: activeSession.id,
+          message:    content,
+        });
+        const assistantMessage: MessageResponse = {
+          id:         response.message_id,
+          session_id: activeSession.id,
+          role:       "assistant",
+          content:    response.response,
+          phase:      response.phase,
+          metadata:   response.metadata,
+          created_at: new Date().toISOString(),
+        };
+        useProjectStore.getState().appendMessage(assistantMessage);
+        useProjectStore.getState().setCurrentPhase(response.phase);
+      } finally {
+        useProjectStore.getState().setStreaming(false);
+      }
+    }
   }, []);
 
-  return { sendMessage, disconnect };
+  return { sendMessage };
 }

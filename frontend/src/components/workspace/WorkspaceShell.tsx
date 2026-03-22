@@ -13,6 +13,8 @@ import { useProjectStore } from "@/stores/useProjectStore";
 import { FlowPanel } from "@/components/workspace/flow/FlowPanel";
 import { ChatPanel } from "@/components/workspace/chat/ChatPanel";
 import { PhaseIndicator } from "@/components/workspace/PhaseIndicator";
+import type { RoadmapStep } from "@/types";
+
 
 interface WorkspaceShellProps {
   projectId: string;
@@ -22,13 +24,22 @@ export function WorkspaceShell({ projectId }: WorkspaceShellProps) {
   const [loading, setLoading] = useState(true);
   const [error, setError]     = useState<string | null>(null);
 
-  const { setActiveProject, setActiveSession, setMessages, activeProject } =
-    useProjectStore();
+  // ✅ Selector pattern — prevents infinite re-render loop
+  const setActiveProject = useProjectStore((s) => s.setActiveProject);
+  const setActiveSession = useProjectStore((s) => s.setActiveSession);
+  const setMessages      = useProjectStore((s) => s.setMessages);
+  const activeProject    = useProjectStore((s) => s.activeProject);
+  const setDocLinks  = useProjectStore((s) => s.setDocLinks);
+  const setScaffolds = useProjectStore((s) => s.setScaffolds);
+  const setRoadmap   = useProjectStore((s) => s.setRoadmap);
 
   useEffect(() => {
+    let cancelled = false;
+
     async function init() {
       try {
         const project = await projectsApi.get(projectId);
+        if (cancelled) return;
         setActiveProject(project);
 
         let session;
@@ -37,18 +48,41 @@ export function WorkspaceShell({ projectId }: WorkspaceShellProps) {
         } catch {
           session = await sessionsApi.create({ project_id: projectId });
         }
+        if (cancelled) return;
         setActiveSession(session);
 
         const messages = await sessionsApi.getMessages(session.id);
+        if (cancelled) return;
         setMessages(messages);
+        // Restore docs and scaffolds from previous session
+        try {
+          const [docs, scaffolds] = await Promise.all([
+            sessionsApi.getDocLinks(session.id),
+            sessionsApi.getScaffolds(session.id),
+          ]);
+          if (docs.length > 0)      setDocLinks(docs);
+          if (scaffolds.length > 0) setScaffolds(scaffolds);
+        } catch {
+          // Silently fail — tabs will just be empty
+        }
+        // Restore roadmap from session metadata
+        const sessionData = await sessionsApi.getById(session.id);
+        const graphState = sessionData?.metadata?.graph_state as Record<string, unknown> | undefined;
+        const roadmap = (graphState?.roadmap as RoadmapStep[]) ?? [];
+        if (roadmap.length > 0) {
+          setRoadmap(roadmap);
+        }
       } catch (err) {
-        setError(err instanceof Error ? err.message : "Failed to load workspace");
+        if (!cancelled) {
+          setError(err instanceof Error ? err.message : "Failed to load workspace");
+        }
       } finally {
-        setLoading(false);
+        if (!cancelled) setLoading(false);
       }
     }
 
     init();
+    return () => { cancelled = true; };
   }, [projectId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   if (loading) {

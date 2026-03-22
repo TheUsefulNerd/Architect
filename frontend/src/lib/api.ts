@@ -19,6 +19,16 @@ import type {
 
 const BASE_URL = process.env.NEXT_PUBLIC_BACKEND_URL || "http://localhost:8000";
 
+// ─── Supabase singleton client ────────────────────────────────────────────────
+let supabaseClient: ReturnType<typeof createClient> | null = null;
+
+function getSupabaseClient() {
+  if (!supabaseClient) {
+    supabaseClient = createClient();
+  }
+  return supabaseClient;
+}
+
 // ─── Axios instance ───────────────────────────────────────────────────────────
 
 export const apiClient = axios.create({
@@ -27,12 +37,17 @@ export const apiClient = axios.create({
   timeout: 30_000,
 });
 
-// Attach Supabase JWT to every request
+// Attach Supabase JWT to every request (reuse client)
 apiClient.interceptors.request.use(async (config) => {
-  const supabase = createClient();
-  const { data } = await supabase.auth.getSession();
-  if (data.session?.access_token) {
-    config.headers.Authorization = `Bearer ${data.session.access_token}`;
+  try {
+    const supabase = getSupabaseClient();
+    const { data } = await supabase.auth.getSession();
+    if (data.session?.access_token) {
+      config.headers.Authorization = `Bearer ${data.session.access_token}`;
+    }
+  } catch (error) {
+    // Silently fail if session fetch fails
+    console.debug("Failed to attach auth token:", error);
   }
   return config;
 });
@@ -53,13 +68,19 @@ apiClient.interceptors.response.use(
 
 export const projectsApi = {
   list: () =>
-    apiClient.get<ProjectResponse[]>("/api/projects").then((r) => r.data),
+    apiClient
+      .get<{ success: boolean; projects: ProjectResponse[] }>("/api/projects")
+      .then((r) => r.data.projects ?? []),
 
   create: (data: ProjectCreateRequest) =>
-    apiClient.post<ProjectResponse>("/api/projects", data).then((r) => r.data),
+    apiClient
+      .post<{ success: boolean; project: ProjectResponse }>("/api/projects", data)
+      .then((r) => r.data.project),
 
   get: (id: string) =>
-    apiClient.get<ProjectResponse>(`/api/projects/${id}`).then((r) => r.data),
+    apiClient
+      .get<{ success: boolean; project: ProjectResponse }>(`/api/projects/${id}`)
+      .then((r) => r.data.project),
 
   delete: (id: string) =>
     apiClient.delete(`/api/projects/${id}`).then((r) => r.data),
@@ -69,51 +90,116 @@ export const projectsApi = {
 
 export const sessionsApi = {
   create: (data: SessionCreateRequest) =>
-    apiClient.post<SessionResponse>("/api/sessions", data).then((r) => r.data),
+    apiClient
+      .post<{ success: boolean; session: SessionResponse }>("/api/sessions", data)
+      .then((r) => r.data.session),
 
   getByProject: (projectId: string) =>
     apiClient
-      .get<SessionResponse>(`/api/sessions?project_id=${projectId}`)
-      .then((r) => r.data),
+      .get<{ success: boolean; session: SessionResponse }>(
+        `/api/sessions?project_id=${projectId}`
+      )
+      .then((r) => r.data.session),
+
+  getById: (sessionId: string) =>
+    apiClient
+      .get<{ success: boolean; session: SessionResponse }>(
+        `/api/sessions/${sessionId}`
+      )
+      .then((r) => r.data.session),
 
   getMessages: (sessionId: string) =>
     apiClient
-      .get<MessageResponse[]>(`/api/sessions/${sessionId}/messages`)
-      .then((r) => r.data),
+      .get<{ success: boolean; messages: MessageResponse[] }>(
+        `/api/sessions/${sessionId}/messages`
+      )
+      .then((r) => r.data.messages ?? []),
 
   getTechnicalSpec: (sessionId: string) =>
     apiClient
-      .get<TechnicalSpecResponse>(`/api/sessions/${sessionId}/technical-spec`)
-      .then((r) => r.data),
+      .get<{ success: boolean; spec: TechnicalSpecResponse }>(
+        `/api/sessions/${sessionId}/spec`
+      )
+      .then((r) => r.data.spec),
 
   getDocLinks: (sessionId: string) =>
     apiClient
-      .get<DocumentationLinkResponse[]>(
-        `/api/sessions/${sessionId}/documentation-links`
+      .get<{ success: boolean; docs: DocumentationLinkResponse[] }>(
+        `/api/sessions/${sessionId}/docs`
       )
-      .then((r) => r.data),
+      .then((r) => r.data.docs ?? []),
 
   getScaffolds: (sessionId: string) =>
     apiClient
-      .get<CodeScaffoldResponse[]>(`/api/sessions/${sessionId}/scaffolds`)
-      .then((r) => r.data),
+      .get<{ success: boolean; scaffolds: CodeScaffoldResponse[] }>(
+        `/api/sessions/${sessionId}/scaffolds`
+      )
+      .then((r) => r.data.scaffolds ?? []),
 };
 
 // ─── Chat ─────────────────────────────────────────────────────────────────────
 
 export const chatApi = {
   send: (data: ChatRequest) =>
-    apiClient.post<ChatResponse>("/api/chat", data).then((r) => r.data),
+    apiClient
+      .post<ChatResponse>("/api/chat", data)
+      .then((r) => r.data),
+
+  stream: async (
+    data: ChatRequest,
+    onChunk: (chunk: string, phase?: string, node?: string) => void,    onDone: () => Promise<void> | void
+  ) => {
+    const supabase = getSupabaseClient();
+    const { data: authData } = await supabase.auth.getSession();
+    const token = authData.session?.access_token;
+
+    const response = await fetch(
+      `${BASE_URL}/api/chat/stream`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          ...(token && { Authorization: `Bearer ${token}` }),
+        },
+        body: JSON.stringify(data),
+      }
+    );
+
+    if (!response.ok) {
+      throw new Error(`Stream request failed: ${response.statusText}`);
+    }
+
+    const reader = response.body?.getReader();
+    const decoder = new TextDecoder();
+
+    if (!reader) throw new Error("No response body");
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) { await onDone(); break; }
+
+      const chunk = decoder.decode(value, { stream: true });
+      const lines = chunk.split("\n");
+
+      for (const line of lines) {
+        if (!line.startsWith("data: ")) continue;
+        try {
+          const parsed = JSON.parse(line.slice(6));
+
+          if (parsed.node === "done") {
+            await onDone();
+            return;
+          }
+          if (parsed.node === "error") {
+            throw new Error(parsed.content);
+ }
+          if (parsed.content) {
+            onChunk(parsed.content, parsed.phase, parsed.node);
+          }
+        } catch {
+          // skip malformed chunks
+        }
+      }
+    }
+  },
 };
-
-// ─── WebSocket ────────────────────────────────────────────────────────────────
-
-const WS_URL = process.env.NEXT_PUBLIC_WS_URL || "ws://localhost:8000";
-
-export function createChatWebSocket(
-  sessionId: string,
-  token: string
-): WebSocket {
-  const url = `${WS_URL}/api/ws/chat/${sessionId}?token=${token}`;
-  return new WebSocket(url);
-}

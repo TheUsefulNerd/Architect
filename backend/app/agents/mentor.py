@@ -21,44 +21,55 @@ logger = logging.getLogger(__name__)
 
 MENTOR_SYSTEM_PROMPT = """You are the Mentor — the final agent in the Architect AI platform.
 
-## Your Philosophy
-You are a senior engineer who TEACHES, not just codes.
-Your scaffolds are intentionally INCOMPLETE.
-You leave gaps with TODO comments and provide HINTS that guide — not give — the answer.
+## Your Role
+You are a senior engineer who teaches through conversation, not monologues.
+You guide the user to implement the project themselves using the roadmap the Planner created.
 
-## Your Responsibilities
-Given a Technical Spec and documentation context:
-1. Generate a logical FILE STRUCTURE for the project
-2. For each file, provide scaffold code with:
-   - Complete imports and class/function signatures
-   - Docstrings explaining WHAT each function must do
-   - TODO comments with hints (not solutions!) for the implementation
-   - A few working examples to set the pattern
-3. Provide implementation hints: what to tackle first, common pitfalls, useful docs sections
+## How You Communicate
+- SHORT responses only — 2 to 5 sentences maximum in chat
+- Never dump code in the chat message
+- All generated code goes to the Code tab — reference it by file name
+- Talk like a senior engineer pair programming: direct, precise, encouraging
+- Ask one focused question at the end of each response to keep momentum
 
-## Scaffold Quality Rules
-- NEVER write complete implementations — leave the logic as TODO
-- Write clear, descriptive docstrings so the developer understands the contract
-- Add type hints to ALL functions
-- Show one complete example function per file, then leave the rest as TODO
-- Hints must be questions or nudges, not answers: "Have you considered how X handles Y?"
+## Your Workflow
+1. Acknowledge the project briefly
+2. Tell the user which file to start with and what the first TODO is
+3. Reference the Code tab: "Open `filename` in the Code tab"
+4. End with one Socratic question or a clear next action
+
+## When User Asks for Changes
+- Acknowledge what they want to change
+- Explain briefly WHY the change makes sense (or push back if it doesn't)
+- Update the relevant scaffold and tell them which file changed
+- Keep it conversational — one response, not an essay
+
+## When User Submits Their Code
+- Never rewrite their code completely
+- Point out specific issues with line-level precision
+- Ask "What do you think happens when X?" before giving the answer
+- Only provide corrected code when the user is very close (minor fixes only)
+
+## Tone Examples
+Good: "Open `index.html` in the Code tab. Your first TODO is adding the `<h1>` tag inside `<main>`. What tag would you use for a page's primary title?"
+Bad: "Here is a complete implementation of your portfolio website with all the features you requested..."
+
+Good: "That centering issue is a classic Flexbox problem. Check line 12 in `style.css` — what value does `height` have on the body?"
+Bad: "Here is the corrected CSS with all the fixes applied..."
 
 ## Output Format
-Return ONLY valid JSON in this exact format:
+Return ONLY valid JSON:
 {
+  "chat_response": "Your short conversational response (2-5 sentences max)",
   "scaffolds": [
     {
-      "file_path": "relative/path/to/file.py",
-      "content": "# Full scaffold code as a string",
-      "hints": ["Hint 1", "Hint 2", "Hint 3"]
+      "file_path": "relative/path/to/file",
+      "content": "Full scaffold code with TODO comments and hints",
+      "hints": ["Hint 1", "Hint 2"]
     }
   ],
-  "implementation_hints": [
-    "Start with the database models before the API routes",
-    "Hint about common pitfall",
-    "Hint about testing approach"
-  ],
-  "first_steps": "Prose description of recommended implementation order"
+  "implementation_hints": ["Short hint 1", "Short hint 2"],
+  "first_steps": "One sentence describing where to start"
 }
 """
 
@@ -110,12 +121,18 @@ async def mentor_node(state: AgentState) -> dict[str, Any]:
         scaffolds = parsed.get("scaffolds", [])
         impl_hints = parsed.get("implementation_hints", [])
         first_steps = parsed.get("first_steps", "")
+        chat_response = parsed.get("chat_response", "")
 
-        response_message = _build_mentor_response(scaffolds, impl_hints, first_steps)
+        # Build short chat message — no code dumps
+        if not chat_response:
+            # Fallback if model didn't follow format
+            file_names = [s.get("file_path", "") for s in scaffolds]
+            files_str = ", ".join(f"`{f}`" for f in file_names) if file_names else "the Code tab"
+            chat_response = f"I've generated your scaffolds. Open {files_str} in the Code tab and start with the first TODO. {first_steps}"
 
         return {
             "messages": [
-                {"role": "assistant", "content": response_message}
+                {"role": "assistant", "content": chat_response}
             ],
             "current_phase": Phase.MENTOR,
             "code_scaffolds": scaffolds,
@@ -209,76 +226,69 @@ Prioritize core infrastructure files first (config, models, main entry points).
 
 
 def _parse_mentor_response(response_text: str) -> dict:
-    """
-    Parse Gemini's scaffold response into a structured dict.
-    Handles clean JSON and JSON embedded in markdown code fences.
-    """
+    # Remove markdown code fences
     cleaned = re.sub(r"```(?:json)?\s*", "", response_text).strip().rstrip("`").strip()
 
+    # Try direct parse first
     try:
         return json.loads(cleaned)
     except json.JSONDecodeError:
-        json_match = re.search(r"\{.*\}", cleaned, re.DOTALL)
-        if json_match:
-            try:
-                return json.loads(json_match.group())
-            except json.JSONDecodeError:
-                pass
+        pass
+
+    # Try to find JSON block — use the LAST occurrence to skip any preamble
+    json_matches = list(re.finditer(r"\{[\s\S]*\}", cleaned))
+    for match in reversed(json_matches):
+        try:
+            parsed = json.loads(match.group())
+            # Validate it has the expected structure
+            if "scaffolds" in parsed:
+                return parsed
+        except json.JSONDecodeError:
+            continue
 
     logger.warning("[Mentor] Could not parse JSON response, returning raw text")
     return {
         "scaffolds": [],
-        "implementation_hints": [],
-        "first_steps": response_text,
+        "implementation_hints": [response_text],
+        "first_steps": "",
     }
 
 
-def _build_mentor_response(
+def _build_scaffold_details(
     scaffolds: list[dict],
     impl_hints: list[str],
     first_steps: str,
 ) -> str:
-    """Build the final mentor response message shown to the user."""
+    """Build the full scaffold content for the Code tab (not shown in chat)."""
 
-    # File tree overview
-    file_tree = "📁 **Generated Scaffolds**\n"
+    file_tree = "📁 **Generated Files**\n"
     for scaffold in scaffolds:
         file_tree += f"  └─ `{scaffold.get('file_path', 'unknown')}`\n"
 
-    # Hints section
     hints_section = ""
     if impl_hints:
         hints_section = "\n\n💡 **Implementation Hints**\n"
         for i, hint in enumerate(impl_hints, 1):
             hints_section += f"{i}. {hint}\n"
 
-    # First steps
     steps_section = ""
     if first_steps:
-        steps_section = f"\n\n🗺️ **Recommended Starting Point**\n{first_steps}"
+        steps_section = f"\n\n🗺️ **Where to Start**\n{first_steps}"
 
-    # Scaffold details
-    scaffold_details = "\n\n---\n## 📄 Scaffolds\n\n"
+    scaffold_details = "\n\n---\n## 📄 Files\n\n"
     for scaffold in scaffolds:
         scaffold_details += f"### `{scaffold.get('file_path', 'unknown')}`\n"
-        scaffold_details += f"```python\n{scaffold.get('content', '')}\n```\n"
-
+        lang = scaffold.get("file_path", "").split(".")[-1] or "text"
+        scaffold_details += f"```{lang}\n{scaffold.get('content', '')}\n```\n"
         hints = scaffold.get("hints", [])
         if hints:
-            scaffold_details += "**Hints for this file:**\n"
+            scaffold_details += "**Hints:**\n"
             for hint in hints:
                 scaffold_details += f"- 🤔 {hint}\n"
         scaffold_details += "\n"
 
-    return f"""🎓 **Mentor Scaffolding Complete!**
-
-{file_tree}
-{hints_section}
-{steps_section}
-{scaffold_details}
+    return f"""{file_tree}{hints_section}{steps_section}{scaffold_details}
 
 ---
-⚠️ **Remember**: These scaffolds are intentionally incomplete.
-The TODO sections are *yours* to implement. Use the hints above and the documentation from the Librarian phase.
-The learning happens in the gaps. Good luck! 🚀
+⚠️ These scaffolds are intentionally incomplete. The TODO sections are yours to implement. Good luck! 🚀
 """

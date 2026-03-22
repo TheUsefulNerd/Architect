@@ -40,6 +40,17 @@ async def create_project(request: ProjectCreateRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.get("/projects", summary="List all projects")
+async def list_projects():
+    """Fetch all projects."""
+    try:
+        projects = await db_service.list_projects()
+        return {"success": True, "projects": projects}
+    except Exception as e:
+        logger.error(f"List projects error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.get("/projects/{project_id}", summary="Get project details")
 async def get_project(project_id: str):
     """Fetch a project by ID."""
@@ -62,6 +73,14 @@ async def create_session(request: SessionCreateRequest):
     except Exception as e:
         logger.error(f"Create session error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+    
+@router.get("/sessions", summary="Get session by project")
+async def get_session_by_project(project_id: str = Query(...)):
+    """Fetch the active session for a project."""
+    session = await db_service.get_session_by_project(project_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+    return {"success": True, "session": session}
 
 
 @router.get("/sessions/{session_id}", summary="Get session details")
@@ -131,7 +150,7 @@ async def chat(request: ChatRequest):
         )
 
         # Restore existing state from session metadata
-        existing_state = session.get("metadata", {}).get("graph_state")
+        existing_state = session.get("metadata", {}).get("graph_state") or {}
         
         # Load message history from database
         message_history = await db_service.get_messages(session_id)
@@ -205,11 +224,25 @@ async def chat_stream(request: ChatRequest):
         phase=session.get("current_phase"),
     )
 
-    existing_state = session.get("metadata", {}).get("graph_state")
+    existing_state = session.get("metadata", {}).get("graph_state") or {}
+
+    # Load message history from database
+    message_history = await db_service.get_messages(session_id)
+    graph_messages = [
+        {"role": msg["role"], "content": msg["content"]}
+        for msg in message_history
+    ]
+
+    # Inject message history into existing state
+    if existing_state:
+        existing_state["messages"] = graph_messages
+    else:
+        existing_state = {"messages": graph_messages}
 
     async def event_generator():
         """Generate SSE events as each agent node completes."""
         final_state = None
+        sent_message_contents = set()  # Track already-sent messages
 
         try:
             async for update in run_graph_stream(
@@ -221,14 +254,31 @@ async def chat_stream(request: ChatRequest):
                 partial_state = update["state"]
                 final_state = partial_state
 
-                # Extract the latest message from this node
+                # Get all assistant messages from this node's state
                 messages = partial_state.get("messages", [])
-                latest = messages[-1]["content"] if messages else ""
+                
+                # Find messages we haven't sent yet
+                new_content = ""
+                for msg in messages:
+                    if msg.get("role") == "assistant":
+                        content = msg.get("content", "")
+                        # Use a hash to track uniqueness
+                        content_key = hash(content[:100])
+                        if content_key not in sent_message_contents:
+                            sent_message_contents.add(content_key)
+                            new_content = content
+
+                if not new_content:
+                    continue
+
+                raw_phase = partial_state.get("current_phase")
+                phase_str = raw_phase.value if hasattr(raw_phase, "value") else str(raw_phase)
+                logger.info(f"[Stream] phase value: {raw_phase} | type: {type(raw_phase)}")
 
                 event_data = {
                     "node": node_name,
-                    "phase": partial_state.get("current_phase"),
-                    "content": latest,
+                    "phase": phase_str,
+                    "content": new_content,
                     "workflow_complete": partial_state.get("workflow_complete", False),
                 }
 
@@ -244,7 +294,6 @@ async def chat_stream(request: ChatRequest):
         except Exception as e:
             logger.error(f"Streaming error: {e}")
             yield f"data: {json.dumps({'node': 'error', 'content': str(e)})}\n\n"
-
     return StreamingResponse(
         event_generator(),
         media_type="text/event-stream",
@@ -262,25 +311,33 @@ async def chat_stream(request: ChatRequest):
 async def _persist_state_updates(session_id: str, state: dict):
     """
     Persist relevant state updates to Supabase after graph execution.
-    Saves the tech spec, docs, scaffolds, and updates the session.
     """
     try:
         # Update session phase
         current_phase = state.get("current_phase")
+        phase_value = None
         if current_phase:
-            # Convert Phase enum to string value
             phase_value = current_phase.value if hasattr(current_phase, 'value') else str(current_phase)
             await db_service.update_session_phase(session_id, phase_value)
 
-        # Save assistant messages
+        # Save assistant messages — deduplicated against what's already in DB
+        existing_messages = await db_service.get_messages(session_id)
+        existing_contents = {
+            m["content"] for m in existing_messages
+            if m["role"] == "assistant"
+        }
+
         for msg in state.get("messages", []):
             if msg.get("role") == "assistant":
-                await db_service.save_message(
-                    session_id=session_id,
-                    role="assistant",
-                    content=msg["content"],
-                    phase=current_phase,
-                )
+                content = msg["content"]
+                if content not in existing_contents:
+                    await db_service.save_message(
+                        session_id=session_id,
+                        role="assistant",
+                        content=content,
+                        phase=phase_value,
+                    )
+                    existing_contents.add(content)
 
         # Save technical spec (if Planner just finished)
         if state.get("requirements") and state.get("tech_stack"):
@@ -305,9 +362,9 @@ async def _persist_state_updates(session_id: str, state: dict):
                 scaffolds=state["code_scaffolds"],
             )
 
-        # Store serializable graph state in session metadata for next turn
+        # Store serializable graph state in session metadata
         serializable_state = {
-            "current_phase": state.get("current_phase").value if hasattr(state.get("current_phase"), 'value') else str(state.get("current_phase", "planner")),
+            "current_phase": phase_value or "planner",
             "requirements": state.get("requirements"),
             "architecture": state.get("architecture"),
             "tech_stack": state.get("tech_stack", {}),
@@ -315,6 +372,7 @@ async def _persist_state_updates(session_id: str, state: dict):
             "implementation_hints": state.get("implementation_hints", []),
             "iteration_count": state.get("iteration_count", 0),
             "workflow_complete": state.get("workflow_complete", False),
+            "roadmap": state.get("roadmap", []),
         }
         await db_service.update_session_metadata(
             session_id,
@@ -323,4 +381,3 @@ async def _persist_state_updates(session_id: str, state: dict):
 
     except Exception as e:
         logger.error(f"State persistence error: {e}")
-        # Don't raise — persistence failure shouldn't break the response
