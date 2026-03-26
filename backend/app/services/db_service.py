@@ -56,6 +56,17 @@ class DatabaseService:
             logger.error(f"Error fetching project {project_id}: {e}")
             return None
     
+    async def delete_project(self, project_id: str) -> None:
+        """Delete a project by ID."""
+        try:
+            self.client.table("projects")\
+                .delete()\
+                .eq("id", project_id)\
+                .execute()
+        except Exception as e:
+            logger.error(f"Error deleting project {project_id}: {e}")
+            raise
+    
     async def list_projects(self) -> list[dict]:
         """Fetch all projects ordered by created_at descending."""
         try:

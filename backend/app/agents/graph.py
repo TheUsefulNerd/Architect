@@ -68,43 +68,62 @@ def route_after_mentor(state: AgentState) -> Literal["__end__"]:
 # ------------------------------------------------------------------
 # GRAPH CONSTRUCTION
 # ------------------------------------------------------------------
+async def router_node(state: AgentState) -> dict:
+    """Pass-through router — preserves state for routing."""
+    return {
+        "current_phase": state.get("current_phase"),
+        "workflow_complete": state.get("workflow_complete", False),
+    }
+
+def route_from_router(state: AgentState) -> Literal["planner", "mentor"]:
+    current_phase = state.get("current_phase")
+    phase_value = current_phase.value if hasattr(current_phase, "value") else str(current_phase or "")
+    workflow_complete = state.get("workflow_complete", False)
+
+    logger.info(f"[Router] phase={phase_value}, workflow_complete={workflow_complete}")
+
+    if workflow_complete or "mentor" in phase_value.lower():
+        logger.info("[Graph] Router → Mentor (continuing conversation)")
+        return "mentor"
+
+    logger.info("[Graph] Router → Planner (new workflow)")
+    return "planner"
+
 
 def build_graph() -> StateGraph:
-    """
-    Build and compile the LangGraph state machine.
-
-    Graph structure:
-        [START]
-           ↓
-        planner ──(still gathering)──→ [END / await user input]
-           ↓ (spec ready)
-        librarian
-           ↓
-        mentor
-           ↓
-        [END]
-    """
     graph = StateGraph(AgentState)
 
     # Add nodes
-    graph.add_node("planner", planner_node)
+    graph.add_node("router",    router_node)
+    graph.add_node("planner",   planner_node)
     graph.add_node("librarian", librarian_node)
-    graph.add_node("mentor", mentor_node)
+    graph.add_node("mentor",    mentor_node)
 
-    # Set entry point
-    graph.set_entry_point("planner")
+    # Entry point is now the router
+    graph.set_entry_point("router")
 
-    # Add conditional edges
+    # Router decides where to go
+    graph.add_conditional_edges(
+        "router",
+        route_from_router,
+        {
+            "planner":  "planner",
+            "mentor":   "mentor",
+        }
+    )
+
+    # Planner edges
     graph.add_conditional_edges(
         "planner",
         route_after_planner,
         {
-            "planner": "planner",
+            "planner":   "planner",
             "librarian": "librarian",
             END: END,
         }
     )
 
+    # Librarian edges
     graph.add_conditional_edges(
         "librarian",
         route_after_librarian,
@@ -114,6 +133,7 @@ def build_graph() -> StateGraph:
         }
     )
 
+    # Mentor edges
     graph.add_conditional_edges(
         "mentor",
         route_after_mentor,
@@ -121,7 +141,6 @@ def build_graph() -> StateGraph:
     )
 
     return graph.compile()
-
 
 # ------------------------------------------------------------------
 # GRAPH RUNNER
@@ -190,22 +209,23 @@ async def run_graph_stream(
     # Merge existing state on top if we have real data
     if existing_state and existing_state.get("current_phase"):
         state = {
-            "session_id": session_id,
-            "current_phase": existing_state.get("current_phase", Phase.PLANNER),
-            "messages": existing_state.get("messages", []),
-            "user_input": user_input,
-            "requirements": existing_state.get("requirements"),
-            "architecture": existing_state.get("architecture"),
-            "tech_stack": existing_state.get("tech_stack", {}),
+            "session_id":              session_id,
+            "current_phase":           existing_state.get("current_phase", Phase.PLANNER),
+            "messages":                existing_state.get("messages", []),
+            "user_input":              user_input,
+            "requirements":            existing_state.get("requirements"),
+            "architecture":            existing_state.get("architecture"),
+            "tech_stack":              existing_state.get("tech_stack", {}),
+            "roadmap":                 existing_state.get("roadmap", []),
             "identified_technologies": existing_state.get("identified_technologies", []),
-            "documentation_links": existing_state.get("documentation_links", []),
-            "code_scaffolds": existing_state.get("code_scaffolds", []),
-            "implementation_hints": existing_state.get("implementation_hints", []),
-            "iteration_count": existing_state.get("iteration_count", 0),
-            "error_message": None,
-            "needs_clarification": existing_state.get("needs_clarification", False),
-            "workflow_complete": existing_state.get("workflow_complete", False),
-            "metadata": existing_state.get("metadata", {})
+            "documentation_links":     existing_state.get("documentation_links", []),
+            "code_scaffolds":          existing_state.get("code_scaffolds", []),
+            "implementation_hints":    existing_state.get("implementation_hints", []),
+            "iteration_count":         existing_state.get("iteration_count", 0),
+            "error_message":           None,
+            "needs_clarification":     existing_state.get("needs_clarification", False),
+            "workflow_complete":       existing_state.get("workflow_complete", False),
+            "metadata":                existing_state.get("metadata", {})
         }
 
     logger.info(f"[Graph] Streaming — session={session_id}")
@@ -215,7 +235,7 @@ async def run_graph_stream(
             for node_name, partial_state in chunk.items():
                 logger.info(f"[Graph] Node completed: {node_name}")
                 yield {
-                    "node": node_name,
+                    "node":  node_name,
                     "state": partial_state,
                 }
     except Exception as e:

@@ -50,8 +50,8 @@ class Settings(BaseSettings):
     cors_origins: str = Field(default="http://localhost:3000,http://localhost:8000")
     
     # LLM Configuration
-    default_llm_provider: str = Field(default="gemini")
-    default_model: str = Field(default="gemini-1.5-pro")
+    default_llm_provider: str = Field(default="groq")
+    default_model: str = Field(default="meta-llama/llama-4-scout-17b-16e-instruct")
     temperature: float = Field(default=0.7, ge=0.0, le=2.0)
     max_tokens: int = Field(default=2048)
     

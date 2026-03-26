@@ -1,14 +1,14 @@
 /**
  * useChat Hook
  * Manages chat state and message sending via SSE streaming.
- * Populates docs and scaffolds store when respective agents complete.
+ * Each agent node produces a separate message bubble immediately.
  */
 "use client";
 
 import { useCallback } from "react";
 import { chatApi, sessionsApi } from "@/lib/api";
 import { useProjectStore } from "@/stores/useProjectStore";
-import type { MessageResponse, Phase, RoadmapStep} from "@/types";
+import type { MessageResponse, Phase, RoadmapStep } from "@/types";
 
 function normalisePhase(raw: string | undefined): Phase | null {
   if (!raw) return null;
@@ -36,10 +36,28 @@ export function useChat() {
     };
     useProjectStore.getState().appendMessage(userMessage);
     useProjectStore.getState().setStreaming(true);
-    useProjectStore.getState().clearStreamingContent();
 
-    // Track which nodes have completed to fetch their data
-    const completedNodes = new Set<string>();
+    // Per-node tracking
+    let currentNode = "";
+    let currentNodeContent = "";
+    let currentPhase: Phase = activeSession.current_phase;
+
+    const finaliseCurrentNode = () => {
+      if (currentNodeContent.trim()) {
+        const msg: MessageResponse = {
+          id:         crypto.randomUUID(),
+          session_id: activeSession.id,
+          role:       "assistant",
+          content:    currentNodeContent,
+          phase:      currentPhase,
+          metadata:   {},
+          created_at: new Date().toISOString(),
+        };
+        useProjectStore.getState().appendMessage(msg);
+        useProjectStore.getState().clearStreamingContent();
+        currentNodeContent = "";
+      }
+    };
 
     try {
       await chatApi.stream(
@@ -47,80 +65,70 @@ export function useChat() {
 
         // onChunk
         async (chunk, phase, node) => {
-          useProjectStore.getState().appendStreamChunk(chunk);
-
           const normPhase = normalisePhase(phase);
           if (normPhase) {
+            currentPhase = normPhase;
             useProjectStore.getState().setCurrentPhase(normPhase);
           }
 
-          // When a node completes, fetch its output data
-          if (node && !completedNodes.has(node)) {
-            completedNodes.add(node);
+          // Node changed — finalise previous node's message
+          // Set currentNode on first chunk if not set
+          if (!currentNode && node) {
+            currentNode = node;
+          }
 
-            if (node === "librarian") {
-              // Fetch and store docs
-              try {
-                const docs = await sessionsApi.getDocLinks(activeSession.id);
-                useProjectStore.getState().setDocLinks(docs);
-                // Switch to docs tab to notify user
-                useProjectStore.getState().setActiveTab("docs");
-                // Switch back to chat after a moment
-                setTimeout(() => {
-                  useProjectStore.getState().setActiveTab("chat");
-                }, 2000);
-              } catch {
-                // Silently fail — docs tab will just be empty
-              }
-            }
+          // Node changed — finalise previous node's message
+          if (node && node !== currentNode && node !== "done") {
+            finaliseCurrentNode();
+            currentNode = node;
+          }
 
-            if (node === "mentor") {
-              // Fetch and store scaffolds
-              try {
-                const scaffolds = await sessionsApi.getScaffolds(activeSession.id);
-                useProjectStore.getState().setScaffolds(scaffolds);
-              } catch {
-                // Silently fail — code tab will just be empty
-              }
-            }
+          // Accumulate content and update streaming bubble
+          if (chunk) {
+            currentNodeContent += chunk;
+            useProjectStore.getState().clearStreamingContent();
+            useProjectStore.getState().appendStreamChunk(currentNodeContent);
           }
         },
 
         // onDone
         async () => {
-          const { streamingContent, activeSession: session } =
-            useProjectStore.getState();
-
-          if (streamingContent) {
-            const assistantMessage: MessageResponse = {
-              id:         crypto.randomUUID(),
-              session_id: session?.id ?? "",
-              role:       "assistant",
-              content:    streamingContent,
-              phase:      session?.current_phase,
-              metadata:   {},
-              created_at: new Date().toISOString(),
-            };
-            useProjectStore.getState().appendMessage(assistantMessage);
-            useProjectStore.getState().clearStreamingContent();
-          }
+          // Finalise the last node's message
+          finaliseCurrentNode();
           useProjectStore.getState().setStreaming(false);
 
-          // After stream completes, fetch roadmap from persisted session
-          if (session) {
+          // After everything completes — fetch roadmap and any remaining data
+          if (activeSession) {
             try {
-              await new Promise(resolve => setTimeout(resolve, 500));
-              const sessionData = await sessionsApi.getById(session.id);
+              await new Promise(resolve => setTimeout(resolve, 800));
+
+              const [sessionData, docs, scaffolds] = await Promise.all([
+                sessionsApi.getById(activeSession.id),
+                sessionsApi.getDocLinks(activeSession.id),
+                sessionsApi.getScaffolds(activeSession.id),
+              ]);
+
+              // Update roadmap
               const graphState = sessionData?.metadata?.graph_state as Record<string, unknown> | undefined;
               const roadmap = (graphState?.roadmap as RoadmapStep[]) ?? [];
               if (roadmap.length > 0) {
                 useProjectStore.getState().setRoadmap(roadmap);
               }
+
+              // Update docs if not already set
+              if (docs.length > 0) {
+                useProjectStore.getState().setDocLinks(docs);
+              }
+
+              // Update scaffolds if not already set
+              if (scaffolds.length > 0) {
+                useProjectStore.getState().setScaffolds(scaffolds);
+              }
             } catch {
-              // Silently fail
+              // silently fail
             }
           }
-        },
+        }
       );
     } catch {
       try {

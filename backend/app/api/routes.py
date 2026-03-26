@@ -59,6 +59,16 @@ async def get_project(project_id: str):
         raise HTTPException(status_code=404, detail="Project not found")
     return {"success": True, "project": project}
 
+@router.delete("/projects/{project_id}", summary="Delete a project")
+async def delete_project(project_id: str):
+    """Delete a project by ID."""
+    try:
+        await db_service.delete_project(project_id)
+        return {"success": True}
+    except Exception as e:
+        logger.error(f"Delete project error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 
 # ------------------------------------------------------------------
 # SESSIONS
@@ -151,27 +161,21 @@ async def chat(request: ChatRequest):
 
         # Restore existing state from session metadata
         existing_state = session.get("metadata", {}).get("graph_state") or {}
-        
-        # Load message history from database
+
+        # Only pass recent context — not full history to avoid replay loops
         message_history = await db_service.get_messages(session_id)
-        
-        # Convert database messages to graph format
+
+        # Keep only last 6 messages for context (3 turns)
+        recent_messages = message_history[-6:] if len(message_history) > 6 else message_history
         graph_messages = [
-            {
-                "role": msg["role"],
-                "content": msg["content"]
-            }
-            for msg in message_history
+            {"role": msg["role"], "content": msg["content"]}
+            for msg in recent_messages
         ]
-        
-        # Add message history to state if we have one
+
         if existing_state:
             existing_state["messages"] = graph_messages
         else:
-            # Create new state with message history
-            existing_state = {
-                "messages": graph_messages
-            }
+            existing_state = {"messages": graph_messages}
 
         # Run the LangGraph pipeline
         final_state = await run_graph(
@@ -259,14 +263,16 @@ async def chat_stream(request: ChatRequest):
                 
                 # Find messages we haven't sent yet
                 new_content = ""
-                for msg in messages:
+                messages = partial_state.get("messages", [])
+
+                for msg in reversed(messages):
                     if msg.get("role") == "assistant":
                         content = msg.get("content", "")
-                        # Use a hash to track uniqueness
                         content_key = hash(content[:100])
                         if content_key not in sent_message_contents:
                             sent_message_contents.add(content_key)
                             new_content = content
+                        break
 
                 if not new_content:
                     continue

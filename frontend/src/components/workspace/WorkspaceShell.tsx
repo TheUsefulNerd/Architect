@@ -35,7 +35,7 @@ export function WorkspaceShell({ projectId }: WorkspaceShellProps) {
 
   useEffect(() => {
     let cancelled = false;
-
+    useProjectStore.getState().reset();
     async function init() {
       try {
         const project = await projectsApi.get(projectId);

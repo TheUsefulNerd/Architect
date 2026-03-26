@@ -95,6 +95,9 @@ async def mentor_node(state: AgentState) -> dict[str, Any]:
     architecture = state.get("architecture", "")
     tech_stack = state.get("tech_stack", {})
     docs = state.get("documentation_links", [])
+    
+    messages = state.get("messages", [])
+    recent_messages = messages[-10:] if len(messages) > 10 else messages
 
     if not requirements:
         logger.warning("[Mentor] No requirements found in state")
@@ -108,10 +111,12 @@ async def mentor_node(state: AgentState) -> dict[str, Any]:
         patterns = await _fetch_relevant_patterns(requirements, tech_stack)
 
         # Step 2: Build the prompt with spec + docs + patterns
-        prompt = _build_mentor_prompt(requirements, architecture, tech_stack, docs, patterns)
+        messages = state.get("messages", [])
+        recent_messages = messages[-10:] if len(messages) > 10 else messages
+        prompt = _build_mentor_prompt(requirements, architecture, tech_stack, docs, patterns, recent_messages)
 
         # Step 3: Generate scaffolds using Gemini
-        response_text = await llm_service.gemini_generate(
+        response_text = await llm_service.groq_generate(
             prompt=prompt,
             system_prompt=MENTOR_SYSTEM_PROMPT,
             temperature=0.4,        # low-medium: creative but consistent
@@ -180,28 +185,52 @@ def _build_mentor_prompt(
     tech_stack: dict,
     docs: list[dict],
     patterns: list[dict],
+    conversation_history: list[dict] = [],
 ) -> str:
-    """Assemble the full Gemini prompt for scaffold generation."""
+    """Assemble the full prompt for scaffold generation and follow-up guidance."""
 
-    # Summarize tech stack
     stack_lines = []
     for category, techs in tech_stack.items():
         if techs:
             stack_lines.append(f"  {category}: {', '.join(techs)}")
     stack_summary = "\n".join(stack_lines)
 
-    # Include top doc summaries (cap to avoid token overflow)
     doc_context = ""
     for doc in docs[:8]:
         doc_context += f"\n### {doc.get('tech_name')} — {doc.get('section_title')}\n"
         doc_context += doc.get("content", "")[:400] + "\n"
 
-    # Include relevant code patterns
     pattern_context = ""
     for p in patterns:
         pattern_context += f"\n### Pattern: {p.get('pattern_name')}\n"
         pattern_context += f"Use case: {p.get('use_case')}\n"
         pattern_context += f"```\n{p.get('code_snippet', '')[:300]}\n```\n"
+
+    # Build conversation history context
+    history_context = ""
+    if conversation_history:
+        history_context = "\n## Recent Conversation\n"
+        for msg in conversation_history:
+            role    = msg.get("role", "")
+            content = msg.get("content", "")
+            if role in ("user", "assistant") and content:
+                prefix    = "User" if role == "user" else "Mentor"
+                truncated = content[:300] + "..." if len(content) > 300 else content
+                history_context += f"{prefix}: {truncated}\n"
+
+    # Determine if this is first-time scaffold generation or a follow-up
+    is_followup = len(conversation_history) > 2
+
+    instruction = (
+        """Based on the conversation history above, continue guiding the user.
+Do NOT repeat what you already said. Progress the conversation forward.
+If the user submitted code, review it specifically.
+If the user said yes/ok/proceed, move to the next TODO item."""
+        if is_followup else
+        """Generate the project scaffold following your system instructions.
+Create scaffolds for the most important files based on the tech stack above.
+Prioritize core infrastructure files first (config, models, main entry points)."""
+    )
 
     return f"""## Project Requirements
 {requirements}
@@ -217,42 +246,40 @@ def _build_mentor_prompt(
 
 ## Code Patterns to Consider
 {pattern_context if pattern_context else "No patterns available."}
-
+{history_context}
 ---
-Generate the project scaffold following your system instructions.
-Create scaffolds for the most important files based on the tech stack above.
-Prioritize core infrastructure files first (config, models, main entry points).
+{instruction}
 """
 
-
 def _parse_mentor_response(response_text: str) -> dict:
-    # Remove markdown code fences
+    """Parse mentor response — handles JSON and plain conversational text."""
     cleaned = re.sub(r"```(?:json)?\s*", "", response_text).strip().rstrip("`").strip()
 
-    # Try direct parse first
+    # Try direct JSON parse
     try:
         return json.loads(cleaned)
     except json.JSONDecodeError:
         pass
 
-    # Try to find JSON block — use the LAST occurrence to skip any preamble
+    # Try to find JSON block
     json_matches = list(re.finditer(r"\{[\s\S]*\}", cleaned))
     for match in reversed(json_matches):
         try:
             parsed = json.loads(match.group())
-            # Validate it has the expected structure
-            if "scaffolds" in parsed:
+            if "chat_response" in parsed or "scaffolds" in parsed:
                 return parsed
         except json.JSONDecodeError:
             continue
 
-    logger.warning("[Mentor] Could not parse JSON response, returning raw text")
+    # ✅ Fallback — treat entire response as a chat message
+    # This handles Groq returning plain conversational text
+    logger.info("[Mentor] Plain text response — treating as chat message")
     return {
+        "chat_response": response_text,
         "scaffolds": [],
-        "implementation_hints": [response_text],
+        "implementation_hints": [],
         "first_steps": "",
     }
-
 
 def _build_scaffold_details(
     scaffolds: list[dict],

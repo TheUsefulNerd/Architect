@@ -112,7 +112,7 @@ async def planner_node(state: AgentState) -> dict[str, Any]:
     })
 
     try:
-        response_text = await llm_service.gemini_chat(
+        response_text = await llm_service.groq_chat(
             messages=gemini_messages,
             system_prompt=PLANNER_SYSTEM_PROMPT,
             temperature=0.7,
@@ -185,15 +185,18 @@ async def planner_node(state: AgentState) -> dict[str, Any]:
 # ------------------------------------------------------------------
 
 def _build_gemini_messages(messages: list[dict]) -> list[dict]:
-    """Convert stored messages to Gemini format (user/model roles)."""
-    gemini_messages = []
+    """Convert stored messages to chat format."""
+    result = []
     for msg in messages:
-        role = "model" if msg["role"] == "assistant" else "user"
-        gemini_messages.append({
+        role = msg["role"]
+        # Normalise — both Groq and Gemini need standard roles
+        if role == "model":
+            role = "assistant"
+        result.append({
             "role": role,
             "content": msg["content"]
         })
-    return gemini_messages
+    return result
 
 
 def _parse_planner_response(response_text: str) -> dict:
