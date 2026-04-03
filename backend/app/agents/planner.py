@@ -99,20 +99,18 @@ Output only valid JSON. No markdown, no explanation outside the JSON.
 async def planner_node(state: AgentState) -> dict[str, Any]:
     """
     LangGraph node for the Planner agent.
+    Uses Gemini (multi-turn chat) to gather requirements and produce a spec.
     """
     logger.info(f"[Planner] Processing session {state['session_id']}")
 
-    # Build conversation history for Gemini
     gemini_messages = _build_gemini_messages(state["messages"])
-
-    # Add the latest user input
     gemini_messages.append({
         "role": "user",
         "content": state["user_input"]
     })
 
     try:
-        response_text = await llm_service.groq_chat(
+        response_text = await llm_service.gemini_chat(
             messages=gemini_messages,
             system_prompt=PLANNER_SYSTEM_PROMPT,
             temperature=0.7,
@@ -128,7 +126,7 @@ async def planner_node(state: AgentState) -> dict[str, Any]:
                     {"role": "user",      "content": state["user_input"]},
                     {"role": "assistant", "content": parsed["response"]},
                 ],
-                "current_phase":     Phase.PLANNER,
+                "current_phase":       Phase.PLANNER,
                 "needs_clarification": True,
                 "metadata": {
                     **state.get("metadata", {}),
@@ -165,7 +163,7 @@ async def planner_node(state: AgentState) -> dict[str, Any]:
                 {"role": "user",      "content": state["user_input"]},
                 {"role": "assistant", "content": response_text},
             ],
-            "current_phase":     Phase.PLANNER,
+            "current_phase":       Phase.PLANNER,
             "needs_clarification": True,
         }
 
@@ -185,17 +183,13 @@ async def planner_node(state: AgentState) -> dict[str, Any]:
 # ------------------------------------------------------------------
 
 def _build_gemini_messages(messages: list[dict]) -> list[dict]:
-    """Convert stored messages to chat format."""
+    """Convert stored messages to Gemini chat format, normalising roles."""
     result = []
     for msg in messages:
         role = msg["role"]
-        # Normalise — both Groq and Gemini need standard roles
         if role == "model":
             role = "assistant"
-        result.append({
-            "role": role,
-            "content": msg["content"]
-        })
+        result.append({"role": role, "content": msg["content"]})
     return result
 
 
@@ -213,7 +207,7 @@ def _parse_planner_response(response_text: str) -> dict:
             except json.JSONDecodeError:
                 pass
 
-    # Not JSON — treat as gathering response
+    # Not JSON — treat as a gathering response
     return {
         "status":   "gathering",
         "response": response_text

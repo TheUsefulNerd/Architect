@@ -1,6 +1,6 @@
 """
 Librarian Agent - Phase II of the Architect workflow.
-Uses Groq (for speed) to identify which technologies need documentation,
+Uses Gemini to identify which technologies need documentation,
 then crawls official docs and returns full scraped content with citations.
 """
 import json
@@ -51,10 +51,10 @@ async def librarian_node(state: AgentState) -> dict[str, Any]:
     """
     LangGraph node for the Librarian agent.
 
-    1. Uses Groq to identify technologies from the tech stack
+    1. Uses Gemini to identify technologies from the tech stack
     2. Crawls official documentation for each technology
     3. Stores embeddings in Qdrant
-    4. Uses Groq to synthesize a cited response
+    4. Uses Gemini to synthesize a cited response
 
     Returns:
         Partial state dict with updated fields
@@ -85,10 +85,9 @@ async def librarian_node(state: AgentState) -> dict[str, Any]:
         # Step 3: Store docs in Qdrant for semantic search
         await _store_docs_in_vector_db(docs, state["session_id"])
 
-        # Step 4: Synthesize a cited response using Groq
+        # Step 4: Synthesize a cited response using Gemini
         synthesis = await _synthesize_documentation(docs, context, identified_techs)
 
-        # Build the full assistant message
         response_message = _build_librarian_response(identified_techs, synthesis, docs)
 
         return {
@@ -123,7 +122,7 @@ async def librarian_node(state: AgentState) -> dict[str, Any]:
 
 async def _identify_technologies(tech_stack: dict) -> list[str]:
     """
-    Use Groq to extract a clean, normalized list of technologies
+    Use Gemini to extract a clean, normalized list of technologies
     from the tech_stack dict.
     """
     stack_text = json.dumps(tech_stack, indent=2)
@@ -133,10 +132,10 @@ async def _identify_technologies(tech_stack: dict) -> list[str]:
 Return a JSON array of all technology names that need documentation lookup."""
 
     try:
-        response = await llm_service.groq_generate(
+        response = await llm_service.gemini_generate(
             prompt=prompt,
             system_prompt=TECH_IDENTIFIER_PROMPT,
-            temperature=0.1,        # low temp for consistent extraction
+            temperature=0.1,    # low temp for consistent extraction
         )
 
         cleaned = re.sub(r"```(?:json)?\s*", "", response).strip().rstrip("`").strip()
@@ -177,14 +176,14 @@ async def _synthesize_documentation(
     techs: list[str],
 ) -> str:
     """
-    Use Groq to synthesize a cited, readable summary from raw scraped docs.
+    Use Gemini to synthesize a cited, readable summary from raw scraped docs.
     """
     if not docs:
         return "No documentation was found for the identified technologies."
 
-    # Build numbered citations context for Groq
+    # Build numbered citations context — cap at 15 to stay within token limits
     citations_text = ""
-    for i, doc in enumerate(docs[:15], 1):     # cap at 15 to stay within token limits
+    for i, doc in enumerate(docs[:15], 1):
         citations_text += f"\n[{i}] {doc.get('tech_name')} — {doc.get('section_title')}\n"
         citations_text += f"URL: {doc.get('doc_url')}\n"
         citations_text += doc.get("content", "")[:600] + "\n"
@@ -202,7 +201,7 @@ Please synthesize this documentation into a clear, practical guide for building 
 Reference sources inline using [n] citation numbers."""
 
     try:
-        return await llm_service.groq_chat(
+        return await llm_service.gemini_chat(
             messages=[{"role": "user", "content": prompt}],
             system_prompt=LIBRARIAN_SYNTHESIS_PROMPT,
             temperature=0.3,
@@ -218,6 +217,6 @@ def _build_librarian_response(
     synthesis: str,
     docs: list[dict],
 ) -> str:
-    """Minimal chat message —  Documentation Links are in the Docs tab."""
+    """Minimal chat message — Documentation Links are in the Docs tab."""
     doc_count = len({doc.get("doc_url") for doc in docs if doc.get("doc_url")})
     return f"📚 Found {doc_count} documentation sources. Check the **Docs tab** to review them."

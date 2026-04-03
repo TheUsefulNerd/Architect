@@ -95,7 +95,7 @@ async def mentor_node(state: AgentState) -> dict[str, Any]:
     architecture = state.get("architecture", "")
     tech_stack = state.get("tech_stack", {})
     docs = state.get("documentation_links", [])
-    
+
     messages = state.get("messages", [])
     recent_messages = messages[-10:] if len(messages) > 10 else messages
 
@@ -110,43 +110,45 @@ async def mentor_node(state: AgentState) -> dict[str, Any]:
         # Step 1: Retrieve relevant code patterns from Qdrant
         patterns = await _fetch_relevant_patterns(requirements, tech_stack)
 
-        # Step 2: Build the prompt with spec + docs + patterns
-        messages = state.get("messages", [])
-        recent_messages = messages[-10:] if len(messages) > 10 else messages
-        prompt = _build_mentor_prompt(requirements, architecture, tech_stack, docs, patterns, recent_messages)
+        # Step 2: Build the full prompt
+        prompt = _build_mentor_prompt(
+            requirements, architecture, tech_stack, docs, patterns, recent_messages
+        )
 
         # Step 3: Generate scaffolds using Gemini
-        response_text = await llm_service.groq_generate(
+        response_text = await llm_service.gemini_generate(
             prompt=prompt,
             system_prompt=MENTOR_SYSTEM_PROMPT,
-            temperature=0.4,        # low-medium: creative but consistent
+            temperature=0.4,    # low-medium: creative but consistent
         )
 
         parsed = _parse_mentor_response(response_text)
-        scaffolds = parsed.get("scaffolds", [])
-        impl_hints = parsed.get("implementation_hints", [])
-        first_steps = parsed.get("first_steps", "")
+        scaffolds    = parsed.get("scaffolds", [])
+        impl_hints   = parsed.get("implementation_hints", [])
+        first_steps  = parsed.get("first_steps", "")
         chat_response = parsed.get("chat_response", "")
 
-        # Build short chat message — no code dumps
+        # Fallback chat message if model didn't follow format
         if not chat_response:
-            # Fallback if model didn't follow format
             file_names = [s.get("file_path", "") for s in scaffolds]
-            files_str = ", ".join(f"`{f}`" for f in file_names) if file_names else "the Code tab"
-            chat_response = f"I've generated your scaffolds. Open {files_str} in the Code tab and start with the first TODO. {first_steps}"
+            files_str  = ", ".join(f"`{f}`" for f in file_names) if file_names else "the Code tab"
+            chat_response = (
+                f"I've generated your scaffolds. Open {files_str} in the Code tab "
+                f"and start with the first TODO. {first_steps}"
+            )
 
         return {
             "messages": [
                 {"role": "assistant", "content": chat_response}
             ],
-            "current_phase": Phase.MENTOR,
-            "code_scaffolds": scaffolds,
+            "current_phase":       Phase.MENTOR,
+            "code_scaffolds":      scaffolds,
             "implementation_hints": impl_hints,
-            "workflow_complete": True,
+            "workflow_complete":   True,
             "needs_clarification": False,
             "metadata": {
                 **state.get("metadata", {}),
-                "mentor_status": "complete",
+                "mentor_status":  "complete",
                 "scaffold_count": len(scaffolds),
             },
         }
@@ -206,7 +208,6 @@ def _build_mentor_prompt(
         pattern_context += f"Use case: {p.get('use_case')}\n"
         pattern_context += f"```\n{p.get('code_snippet', '')[:300]}\n```\n"
 
-    # Build conversation history context
     history_context = ""
     if conversation_history:
         history_context = "\n## Recent Conversation\n"
@@ -218,7 +219,6 @@ def _build_mentor_prompt(
                 truncated = content[:300] + "..." if len(content) > 300 else content
                 history_context += f"{prefix}: {truncated}\n"
 
-    # Determine if this is first-time scaffold generation or a follow-up
     is_followup = len(conversation_history) > 2
 
     instruction = (
@@ -251,6 +251,7 @@ Prioritize core infrastructure files first (config, models, main entry points)."
 {instruction}
 """
 
+
 def _parse_mentor_response(response_text: str) -> dict:
     """Parse mentor response — handles JSON and plain conversational text."""
     cleaned = re.sub(r"```(?:json)?\s*", "", response_text).strip().rstrip("`").strip()
@@ -261,7 +262,7 @@ def _parse_mentor_response(response_text: str) -> dict:
     except json.JSONDecodeError:
         pass
 
-    # Try to find JSON block
+    # Try to find a JSON block anywhere in the response
     json_matches = list(re.finditer(r"\{[\s\S]*\}", cleaned))
     for match in reversed(json_matches):
         try:
@@ -271,15 +272,15 @@ def _parse_mentor_response(response_text: str) -> dict:
         except json.JSONDecodeError:
             continue
 
-    # ✅ Fallback — treat entire response as a chat message
-    # This handles Groq returning plain conversational text
+    # Fallback — treat entire response as a chat message
     logger.info("[Mentor] Plain text response — treating as chat message")
     return {
-        "chat_response": response_text,
-        "scaffolds": [],
+        "chat_response":        response_text,
+        "scaffolds":            [],
         "implementation_hints": [],
-        "first_steps": "",
+        "first_steps":          "",
     }
+
 
 def _build_scaffold_details(
     scaffolds: list[dict],
@@ -314,8 +315,9 @@ def _build_scaffold_details(
                 scaffold_details += f"- 🤔 {hint}\n"
         scaffold_details += "\n"
 
-    return f"""{file_tree}{hints_section}{steps_section}{scaffold_details}
-
----
-⚠️ These scaffolds are intentionally incomplete. The TODO sections are yours to implement. Good luck! 🚀
-"""
+    return (
+        f"{file_tree}{hints_section}{steps_section}{scaffold_details}\n\n"
+        "---\n"
+        "⚠️ These scaffolds are intentionally incomplete. "
+        "The TODO sections are yours to implement. Good luck! 🚀\n"
+    )

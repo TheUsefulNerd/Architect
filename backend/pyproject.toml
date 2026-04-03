@@ -22,6 +22,7 @@ langchain-community = "^0.0.13"
 google-generativeai = "^0.3.2"
 langchain-google-genai = "^0.0.5"
 groq = "^0.4.1"
+google-api-core = "^2.11.0"
 # Vector Database
 qdrant-client = "^1.7.0"
 # PostgreSQL

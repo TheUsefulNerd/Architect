@@ -1,39 +1,75 @@
 """
-LLM Service - Unified interface for Gemini and Groq APIs.
-Gemini handles Planner and Mentor agents (reasoning heavy).
-Groq handles Librarian agent (speed critical).
+LLM Service - Gemini-only interface for all agents.
+Planner, Librarian, and Mentor all use Gemini.
+
+Retry strategy: exponential backoff on 429 ResourceExhausted errors.
+  Attempt 1 → immediate
+  Attempt 2 → wait 2s
+  Attempt 3 → wait 4s
+  Attempt 4 → wait 8s
+  Attempt 5 → wait 16s  (then raises)
 """
+import asyncio
 import logging
 from typing import Optional, AsyncGenerator
-from enum import Enum
 
 import google.generativeai as genai
-from groq import AsyncGroq
+from google.api_core.exceptions import ResourceExhausted, ServiceUnavailable
 
 from app.config import settings
 
 logger = logging.getLogger(__name__)
 
+# Read from config so you can swap models via .env without touching code.
+# Free-tier quota is per-model — switch instantly by changing GEMINI_MODEL in .env:
+# gemini-2.0-flash | gemini-1.5-flash | gemini-1.5-flash-8b
+GEMINI_MODEL = "gemini-2.5-flash"
 
-class LLMProvider(str, Enum):
-    GEMINI = "gemini"
-    GROQ = "groq"
+# Retry configuration
+MAX_RETRIES    = 5
+BASE_DELAY_SEC = 2.0   # doubles each attempt: 2 → 4 → 8 → 16
 
 
-# Model constants
-GEMINI_MODEL = "gemini-3-flash-preview"
-GROQ_MODEL = "llama-3.3-70b-versatile"
+def _is_retryable(exc: Exception) -> bool:
+    """Return True for transient Gemini errors worth retrying."""
+    if isinstance(exc, (ResourceExhausted, ServiceUnavailable)):
+        return True
+    msg = str(exc).lower()
+    return "429" in msg or "resource_exhausted" in msg or "quota" in msg
+
+
+async def _with_retry(coro_fn, label: str):
+    """
+    Execute an async callable with exponential backoff.
+
+    Args:
+        coro_fn: Zero-argument async callable that returns the result.
+        label:   Short name used in log messages (e.g. "gemini_chat").
+    """
+    delay = BASE_DELAY_SEC
+    for attempt in range(1, MAX_RETRIES + 1):
+        try:
+            return await coro_fn()
+        except Exception as exc:
+            if not _is_retryable(exc) or attempt == MAX_RETRIES:
+                logger.error(f"[{label}] Failed after {attempt} attempt(s): {exc}")
+                raise
+            logger.warning(
+                f"[{label}] Attempt {attempt}/{MAX_RETRIES} hit quota/rate limit — "
+                f"retrying in {delay:.0f}s. Error: {exc}"
+            )
+            await asyncio.sleep(delay)
+            delay *= 2
 
 
 class LLMService:
     """
-    Unified interface for Gemini and Groq.
-    - Gemini  → Planner, Mentor (deep reasoning)
-    - Groq    → Librarian (fast processing)
+    Unified Gemini interface for all three Architect agents.
+    Provides chat (multi-turn), generate (single-turn), and stream variants.
+    All public methods automatically retry on 429 / quota errors.
     """
 
     def __init__(self):
-        # Configure Gemini
         genai.configure(api_key=settings.gemini_api_key)
         self.gemini_model = genai.GenerativeModel(
             model_name=GEMINI_MODEL,
@@ -42,14 +78,10 @@ class LLMService:
                 "max_output_tokens": settings.max_tokens,
             }
         )
-
-        # Configure Groq
-        self.groq_client = AsyncGroq(api_key=settings.groq_api_key)
-
-        logger.info("✅ LLM Service initialized (Gemini + Groq)")
+        logger.info(f"✅ LLM Service initialized (Gemini — {GEMINI_MODEL})")
 
     # ------------------------------------------------------------------
-    # GEMINI
+    # GEMINI CHAT  (multi-turn, used by Planner and Librarian)
     # ------------------------------------------------------------------
 
     async def gemini_chat(
@@ -60,49 +92,51 @@ class LLMService:
     ) -> str:
         """
         Send a multi-turn conversation to Gemini and return the response.
+        Retries automatically on quota / rate-limit errors.
 
         Args:
-            messages:       List of {"role": "user"|"model", "parts": [str]} dicts
-            system_prompt:  Optional system instruction prepended to the chat
-            temperature:    Override default temperature
+            messages:      List of {"role": "user"|"model"|"assistant", "content": str} dicts.
+                           "assistant" is normalised to "model" automatically.
+            system_prompt: Optional instruction prepended as the first exchange.
+            temperature:   Override default temperature for this call.
 
         Returns:
-            Assistant response as a string
+            Assistant response as a string.
         """
-        try:
-            # Prepend system prompt as first user message if provided
+        async def _call():
+            # Normalise "assistant" → "model" (Gemini's expected role name)
+            normalised = [
+                {
+                    "role": "model" if m["role"] == "assistant" else m["role"],
+                    "content": m["content"],
+                }
+                for m in messages
+            ]
+
+            # Inject system prompt as a seeded user/model exchange at the front
             if system_prompt:
-                messages = [
-                    {"role": "user", "content": system_prompt},
+                normalised = [
+                    {"role": "user",  "content": system_prompt},
                     {"role": "model", "content": "Understood. I will follow these instructions."},
-                ] + messages
+                ] + normalised
 
-            model = self.gemini_model
-            if temperature is not None:
-                model = genai.GenerativeModel(
-                    model_name=GEMINI_MODEL,
-                    generation_config={
-                        "temperature": temperature,
-                        "max_output_tokens": settings.max_tokens,
-                    }
-                )
+            model = self._model_with_temp(temperature)
 
-            # Build Gemini history (all messages except the last user message)
-            history = []
-            for msg in messages[:-1]:
-                history.append({
-                    "role": msg["role"],          # "user" or "model"
-                    "parts": [msg["content"]]
-                })
+            # History = everything except the final user message
+            history = [
+                {"role": m["role"], "parts": [m["content"]]}
+                for m in normalised[:-1]
+            ]
 
             chat = model.start_chat(history=history)
-            response = await chat.send_message_async(messages[-1]["content"])
-
+            response = await chat.send_message_async(normalised[-1]["content"])
             return response.text
 
-        except Exception as e:
-            logger.error(f"Gemini chat error: {e}")
-            raise
+        return await _with_retry(_call, "gemini_chat")
+
+    # ------------------------------------------------------------------
+    # GEMINI GENERATE  (single-turn, used by Librarian and Mentor)
+    # ------------------------------------------------------------------
 
     async def gemini_generate(
         self,
@@ -111,39 +145,28 @@ class LLMService:
         temperature: Optional[float] = None,
     ) -> str:
         """
-        Simple single-turn generation with Gemini.
+        Single-turn generation with Gemini.
+        Retries automatically on quota / rate-limit errors.
 
         Args:
-            prompt:         The user prompt
-            system_prompt:  Optional system instruction
-            temperature:    Override default temperature
+            prompt:        The user prompt.
+            system_prompt: Optional instruction prepended to the prompt.
+            temperature:   Override default temperature for this call.
 
         Returns:
-            Generated text as a string
+            Generated text as a string.
         """
-        try:
-            # Prepend system prompt to user prompt if provided
-            if system_prompt:
-                full_prompt = f"{system_prompt}\n\n{prompt}"
-            else:
-                full_prompt = prompt
-
-            model = self.gemini_model
-            if temperature is not None:
-                model = genai.GenerativeModel(
-                    model_name=GEMINI_MODEL,
-                    generation_config={
-                        "temperature": temperature,
-                        "max_output_tokens": settings.max_tokens,
-                    }
-                )
-
+        async def _call():
+            full_prompt = f"{system_prompt}\n\n{prompt}" if system_prompt else prompt
+            model = self._model_with_temp(temperature)
             response = await model.generate_content_async(full_prompt)
             return response.text
 
-        except Exception as e:
-            logger.error(f"Gemini generate error: {e}")
-            raise
+        return await _with_retry(_call, "gemini_generate")
+
+    # ------------------------------------------------------------------
+    # GEMINI STREAM  (streaming single-turn, available for future use)
+    # ------------------------------------------------------------------
 
     async def gemini_stream(
         self,
@@ -152,148 +175,45 @@ class LLMService:
     ) -> AsyncGenerator[str, None]:
         """
         Stream a Gemini response chunk by chunk.
+        Note: streaming is not retried — the caller receives chunks in real time.
+        On a 429, the generator raises immediately so the SSE handler can surface
+        a user-friendly error without leaving the stream hanging.
 
         Yields:
-            Text chunks as they arrive
+            Text chunks as they arrive.
         """
+        full_prompt = f"{system_prompt}\n\n{prompt}" if system_prompt else prompt
+        model = genai.GenerativeModel(
+            model_name=GEMINI_MODEL,
+            generation_config={
+                "temperature": settings.temperature,
+                "max_output_tokens": settings.max_tokens,
+            }
+        )
         try:
-            # Prepend system prompt if provided
-            if system_prompt:
-                full_prompt = f"{system_prompt}\n\n{prompt}"
-            else:
-                full_prompt = prompt
-
-            model = genai.GenerativeModel(
-                model_name=GEMINI_MODEL,
-                generation_config={
-                    "temperature": settings.temperature,
-                    "max_output_tokens": settings.max_tokens,
-                }
-            )
-
             response = await model.generate_content_async(full_prompt, stream=True)
             async for chunk in response:
                 if chunk.text:
                     yield chunk.text
-
         except Exception as e:
-            logger.error(f"Gemini stream error: {e}")
+            logger.error(f"[gemini_stream] Error: {e}")
             raise
 
     # ------------------------------------------------------------------
-    # GROQ
+    # INTERNAL HELPERS
     # ------------------------------------------------------------------
 
-    async def groq_chat(
-        self,
-        messages: list[dict],
-        system_prompt: Optional[str] = None,
-        temperature: Optional[float] = None,
-    ) -> str:
-        """
-        Send a conversation to Groq and return the response.
-
-        Args:
-            messages:       List of {"role": "user"|"assistant", "content": str} dicts
-            system_prompt:  Optional system message prepended to messages
-            temperature:    Override default temperature
-
-        Returns:
-            Assistant response as a string
-        """
-        try:
-            formatted = []
-            if system_prompt:
-                formatted.append({"role": "system", "content": system_prompt})
-
-            for msg in messages:
-                formatted.append({
-                    "role": msg["role"],
-                    "content": msg["content"]
-                })
-
-            response = await self.groq_client.chat.completions.create(
-                model=GROQ_MODEL,
-                messages=formatted,
-                temperature=temperature or settings.temperature,
-                max_tokens=settings.max_tokens,
-            )
-
-            return response.choices[0].message.content
-
-        except Exception as e:
-            logger.error(f"Groq chat error: {e}")
-            raise
-
-    async def groq_generate(
-        self,
-        prompt: str,
-        system_prompt: Optional[str] = None,
-        temperature: Optional[float] = None,
-    ) -> str:
-        """
-        Simple single-turn generation with Groq.
-
-        Args:
-            prompt:         The user prompt
-            system_prompt:  Optional system message
-            temperature:    Override default temperature
-
-        Returns:
-            Generated text as a string
-        """
-        try:
-            messages = []
-            if system_prompt:
-                messages.append({"role": "system", "content": system_prompt})
-            messages.append({"role": "user", "content": prompt})
-
-            response = await self.groq_client.chat.completions.create(
-                model=GROQ_MODEL,
-                messages=messages,
-                temperature=temperature or settings.temperature,
-                max_tokens=settings.max_tokens,
-            )
-
-            return response.choices[0].message.content
-
-        except Exception as e:
-            logger.error(f"Groq generate error: {e}")
-            raise
-
-    async def groq_stream(
-        self,
-        prompt: str,
-        system_prompt: Optional[str] = None,
-    ) -> AsyncGenerator[str, None]:
-        """
-        Stream a Groq response chunk by chunk.
-
-        Yields:
-            Text chunks as they arrive
-        """
-        try:
-            messages = []
-            if system_prompt:
-                messages.append({"role": "system", "content": system_prompt})
-            messages.append({"role": "user", "content": prompt})
-
-            stream = await self.groq_client.chat.completions.create(
-                model=GROQ_MODEL,
-                messages=messages,
-                temperature=settings.temperature,
-                max_tokens=settings.max_tokens,
-                stream=True,
-            )
-
-            async for chunk in stream:
-                delta = chunk.choices[0].delta.content
-                if delta:
-                    yield delta
-
-        except Exception as e:
-            logger.error(f"Groq stream error: {e}")
-            raise
+    def _model_with_temp(self, temperature: Optional[float]) -> genai.GenerativeModel:
+        """Return a model instance, overriding temperature when specified."""
+        if temperature is None:
+            return self.gemini_model
+        return genai.GenerativeModel(
+            model_name=GEMINI_MODEL,
+            generation_config={
+                "temperature": temperature,
+                "max_output_tokens": settings.max_tokens,
+            }
+        )
 
 
 # Singleton instance
