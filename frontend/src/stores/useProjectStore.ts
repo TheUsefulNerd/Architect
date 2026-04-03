@@ -9,17 +9,8 @@ import type {
   SessionResponse,
   Phase,
   MessageResponse,
-} from "@/types";
-
-import type {
-  ProjectResponse,
-  SessionResponse,
-  Phase,
-  MessageResponse,
   RoadmapStep,
   WorkspaceTab,
-} from "@/types";
-import type {
   DocumentationLinkResponse,
   CodeScaffoldResponse,
 } from "@/types";
