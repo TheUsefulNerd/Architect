@@ -18,9 +18,8 @@ class Settings(BaseSettings):
     )
 
     # API Keys
-    gemini_api_key: str = Field(..., description="Google Gemini API key")
-    # Groq is no longer used — kept as optional so existing .env files don't break
-    groq_api_key: Optional[str] = Field(default=None, description="Groq API key (unused)")
+    gemini_api_key: str = Field(..., description="Google Gemini API key (fallback LLM)")
+    groq_api_key: str = Field(..., description="Groq API key (primary LLM)")
 
     # Qdrant Configuration
     qdrant_url: str = Field(..., description="Qdrant Cloud URL")
@@ -50,9 +49,10 @@ class Settings(BaseSettings):
     api_port: int = Field(default=8000)
     cors_origins: str = Field(default="http://localhost:3000,http://localhost:8000")
 
-    # LLM Configuration
-    default_llm_provider: str = Field(default="gemini")
-    default_model: str = Field(default="gemini-2.5-flash")
+    # LLM Configuration — Groq is primary, Gemini is fallback
+    default_llm_provider: str = Field(default="groq")
+    default_model: str = Field(default="llama-3.3-70b-versatile")  # Primary Groq model
+    fallback_model: str = Field(default="gemini-2.5-flash")         # Fallback Gemini model
     temperature: float = Field(default=0.7, ge=0.0, le=2.0)
     max_tokens: int = Field(default=2048)
 
