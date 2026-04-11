@@ -4,7 +4,6 @@ Handles projects, sessions, chat, and streaming responses.
 """
 import json
 import logging
-from typing import Optional
 from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, Query
@@ -139,13 +138,14 @@ async def get_code_scaffolds(session_id: str):
 # HELPERS
 # ------------------------------------------------------------------
 
-def _build_existing_state(session: dict, message_history: list[dict]) -> dict:
+async def _build_existing_state(session: dict, message_history: list[dict]) -> dict:
     """
     Reconstruct the full graph state from persisted session data.
 
-    This is the single source of truth for state restoration.
-    It merges the saved graph_state (requirements, tech_stack, etc.)
-    with fresh message history from the DB.
+    Priority for requirements/architecture/tech_stack:
+      1. graph_state in session metadata  (fast, always checked first)
+      2. technical_specs table            (fallback for older sessions where
+                                           graph_state was saved incomplete)
 
     Args:
         session:         The session record from Supabase
@@ -154,6 +154,7 @@ def _build_existing_state(session: dict, message_history: list[dict]) -> dict:
     Returns:
         A complete state dict ready to pass into run_graph / run_graph_stream
     """
+    session_id = session["id"]
     graph_state = session.get("metadata", {}).get("graph_state") or {}
 
     # Convert phase string back to Phase enum so the graph router works correctly
@@ -162,6 +163,23 @@ def _build_existing_state(session: dict, message_history: list[dict]) -> dict:
         phase = Phase(raw_phase)
     except (ValueError, KeyError):
         phase = Phase.PLANNER
+
+    # Pull requirements/architecture/tech_stack from graph_state first
+    requirements = graph_state.get("requirements") or ""
+    architecture = graph_state.get("architecture") or ""
+    tech_stack   = graph_state.get("tech_stack") or {}
+
+    # Fallback: if graph_state was saved incomplete, load from technical_specs table
+    if not requirements:
+        try:
+            spec = await db_service.get_technical_spec(session_id)
+            if spec:
+                requirements = spec.get("requirements") or ""
+                architecture = spec.get("architecture") or ""
+                tech_stack   = spec.get("tech_stack") or {}
+                logger.info(f"[Routes] Restored requirements from technical_specs for session {session_id}")
+        except Exception as e:
+            logger.warning(f"[Routes] Could not load technical_spec fallback: {e}")
 
     # Trim message history to last 10 messages to avoid bloating the prompt
     recent_messages = message_history[-10:] if len(message_history) > 10 else message_history
@@ -173,9 +191,9 @@ def _build_existing_state(session: dict, message_history: list[dict]) -> dict:
     return {
         "current_phase":           phase,
         "messages":                graph_messages,
-        "requirements":            graph_state.get("requirements") or "",
-        "architecture":            graph_state.get("architecture") or "",
-        "tech_stack":              graph_state.get("tech_stack") or {},
+        "requirements":            requirements,
+        "architecture":            architecture,
+        "tech_stack":              tech_stack,
         "roadmap":                 graph_state.get("roadmap") or [],
         "identified_technologies": graph_state.get("identified_technologies") or [],
         "implementation_hints":    graph_state.get("implementation_hints") or [],
@@ -240,6 +258,7 @@ async def _persist_state_updates(session_id: str, state: dict):
             )
 
         # Store serializable graph state in session metadata for next turn
+        # Always persist requirements so future turns can restore them
         serializable_state = {
             "current_phase":           phase_value or "planner",
             "requirements":            state.get("requirements"),
@@ -288,7 +307,7 @@ async def chat(request: ChatRequest):
 
         # Reconstruct full graph state from persisted data
         message_history = await db_service.get_messages(session_id)
-        existing_state = _build_existing_state(session, message_history)
+        existing_state = await _build_existing_state(session, message_history)
 
         # Run the LangGraph pipeline
         final_state = await run_graph(
@@ -304,7 +323,6 @@ async def chat(request: ChatRequest):
         ]
         latest_response = assistant_messages[-1]["content"] if assistant_messages else "No response generated."
 
-        # Persist updates to database
         await _persist_state_updates(session_id, final_state)
 
         return {
@@ -340,9 +358,9 @@ async def chat_stream(request: ChatRequest):
         phase=session.get("current_phase"),
     )
 
-    # Reconstruct full graph state from persisted data
+    # Reconstruct full graph state from persisted data (including technical_specs fallback)
     message_history = await db_service.get_messages(session_id)
-    existing_state = _build_existing_state(session, message_history)
+    existing_state = await _build_existing_state(session, message_history)
 
     async def event_generator():
         """Generate SSE events as each agent node completes."""
