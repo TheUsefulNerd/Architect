@@ -1,7 +1,7 @@
 """
 Librarian Agent - Phase II of the Architect workflow.
 Uses Gemini to identify which technologies need documentation,
-then crawls official docs and returns full scraped content with citations.
+then builds Google search links for each technology as documentation references.
 """
 import json
 import logging
@@ -11,7 +11,6 @@ from typing import Any
 from app.models.state import AgentState
 from app.models.schemas import Phase
 from app.services.llm_service import llm_service
-from app.services.crawler_service import crawler_service
 from app.services.vector_service import vector_service
 
 logger = logging.getLogger(__name__)
@@ -78,11 +77,11 @@ async def librarian_node(state: AgentState) -> dict[str, Any]:
         identified_techs = await _identify_technologies(tech_stack)
         logger.info(f"[Librarian] Technologies identified: {identified_techs}")
 
-        # Step 2: Crawl documentation for all technologies concurrently
-        docs = await crawler_service.fetch_docs_for_tech_stack(tech_stack, context)
-        logger.info(f"[Librarian] Fetched {len(docs)} documentation sections")
+        # Step 2: Build Google search links for all identified technologies
+        docs = _build_search_links(identified_techs, context)
+        logger.info(f"[Librarian] Built {len(docs)} documentation search links")
 
-        # Step 3: Store docs in Qdrant for semantic search
+        # Step 3: Store docs in Qdrant for semantic search (skipped if vector service disabled)
         await _store_docs_in_vector_db(docs, state["session_id"])
 
         # Step 4: Synthesize a cited response using Gemini
@@ -209,7 +208,68 @@ Reference sources inline using [n] citation numbers."""
     except Exception as e:
         logger.error(f"[Librarian] Synthesis error: {e}")
         # Fallback to raw citation formatter
-        return crawler_service.format_citations(docs)
+        return '\n'.join(f"[{i+1}] {d.get('tech_name')} — {d.get('doc_url')}" for i, d in enumerate(docs))
+
+
+def _build_search_links(techs: list[str], context: str = "") -> list[dict]:
+    """
+    Build Google search links for each identified technology.
+    Returns doc-shaped dicts so the rest of the pipeline stays unchanged.
+    """
+    # Well-known official doc URLs — fall back to Google search for everything else
+    KNOWN_DOCS = {
+        "fastapi":      "https://fastapi.tiangolo.com/",
+        "django":       "https://docs.djangoproject.com/",
+        "flask":        "https://flask.palletsprojects.com/",
+        "sqlalchemy":   "https://docs.sqlalchemy.org/",
+        "sqlite":       "https://www.sqlite.org/docs.html",
+        "postgresql":   "https://www.postgresql.org/docs/",
+        "mysql":        "https://dev.mysql.com/doc/",
+        "mongodb":      "https://www.mongodb.com/docs/",
+        "redis":        "https://redis.io/docs/",
+        "react":        "https://react.dev/",
+        "next.js":      "https://nextjs.org/docs",
+        "nextjs":       "https://nextjs.org/docs",
+        "vue":          "https://vuejs.org/guide/",
+        "tailwind css": "https://tailwindcss.com/docs",
+        "tailwindcss":  "https://tailwindcss.com/docs",
+        "typescript":   "https://www.typescriptlang.org/docs/",
+        "python":       "https://docs.python.org/3/",
+        "pydantic":     "https://docs.pydantic.dev/",
+        "langchain":    "https://python.langchain.com/docs/",
+        "langgraph":    "https://langchain-ai.github.io/langgraph/",
+        "qdrant":       "https://qdrant.tech/documentation/",
+        "supabase":     "https://supabase.com/docs",
+        "docker":       "https://docs.docker.com/",
+        "kubernetes":   "https://kubernetes.io/docs/",
+        "celery":       "https://docs.celeryq.dev/",
+        "alembic":      "https://alembic.sqlalchemy.org/en/latest/",
+        "jwt":          "https://jwt.io/introduction",
+        "html":         "https://developer.mozilla.org/en-US/docs/Web/HTML",
+        "css":          "https://developer.mozilla.org/en-US/docs/Web/CSS",
+        "javascript":   "https://developer.mozilla.org/en-US/docs/Web/JavaScript",
+    }
+
+    docs = []
+    for tech in techs:
+        key = tech.lower().strip()
+        if key in KNOWN_DOCS:
+            doc_url = KNOWN_DOCS[key]
+            section_title = f"Official Documentation"
+        else:
+            # Fall back to a Google search for official docs
+            query = f"{tech} official documentation"
+            doc_url = f"https://www.google.com/search?q={query.replace(' ', '+')}"
+            section_title = f"Search: {tech} documentation"
+
+        docs.append({
+            "tech_name":     tech,
+            "doc_url":       doc_url,
+            "section_title": section_title,
+            "content":       f"Refer to the official {tech} documentation at: {doc_url}",
+        })
+
+    return docs
 
 
 def _build_librarian_response(
