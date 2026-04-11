@@ -182,14 +182,42 @@ async def planner_node(state: AgentState) -> dict[str, Any]:
 # HELPERS
 # ------------------------------------------------------------------
 
-def _build_gemini_messages(messages: list[dict]) -> list[dict]:
-    """Convert stored messages to Gemini chat format, normalising roles."""
+def _extract_message_parts(msg: Any) -> tuple[str, str]:
+    """
+    Safely extract (role, content) from either a plain dict or a
+    LangChain message object (HumanMessage, AIMessage, etc.).
+    """
+    # LangChain message objects have a .content attribute
+    if hasattr(msg, "content"):
+        class_name = msg.__class__.__name__.lower()
+        if "human" in class_name:
+            role = "user"
+        elif "ai" in class_name or "assistant" in class_name:
+            role = "assistant"
+        else:
+            role = "user"
+        return role, str(msg.content)
+
+    # Plain dict (standard internal format)
+    if isinstance(msg, dict):
+        return msg.get("role", ""), msg.get("content", "")
+
+    # Fallback
+    return "user", str(msg)
+
+
+def _build_gemini_messages(messages: list) -> list[dict]:
+    """
+    Convert stored messages to Gemini chat format, normalising roles.
+    Handles both plain dicts and LangChain message objects.
+    """
     result = []
     for msg in messages:
-        role = msg["role"]
+        role, content = _extract_message_parts(msg)
         if role == "model":
             role = "assistant"
-        result.append({"role": role, "content": msg["content"]})
+        if role in ("user", "assistant") and content:
+            result.append({"role": role, "content": content})
     return result
 
 
@@ -232,8 +260,6 @@ def _build_spec_summary(spec: dict) -> str:
     roadmap_str = "\n".join(roadmap_lines) if roadmap_lines else "  (no roadmap generated)"
 
     return f"""✅ **Technical Specification Complete!**
-
-I have a clear picture of your project. Here's what I've captured:
 
 **Requirements**
 {spec.get('requirements', '')}
