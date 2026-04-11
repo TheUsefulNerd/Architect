@@ -15,6 +15,7 @@ from app.models.schemas import (
     ChatRequest,
     ProjectCreateRequest,
     SessionCreateRequest,
+    Phase,
 )
 from app.services.db_service import db_service
 
@@ -59,6 +60,7 @@ async def get_project(project_id: str):
         raise HTTPException(status_code=404, detail="Project not found")
     return {"success": True, "project": project}
 
+
 @router.delete("/projects/{project_id}", summary="Delete a project")
 async def delete_project(project_id: str):
     """Delete a project by ID."""
@@ -83,7 +85,8 @@ async def create_session(request: SessionCreateRequest):
     except Exception as e:
         logger.error(f"Create session error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
-    
+
+
 @router.get("/sessions", summary="Get session by project")
 async def get_session_by_project(project_id: str = Query(...)):
     """Fetch the active session for a project."""
@@ -133,186 +136,54 @@ async def get_code_scaffolds(session_id: str):
 
 
 # ------------------------------------------------------------------
-# CHAT (Main orchestration endpoint)
-# ------------------------------------------------------------------
-
-@router.post("/chat", summary="Send a message to the Architect")
-async def chat(request: ChatRequest):
-    """
-    Main chat endpoint.
-    Routes the message through the LangGraph orchestration pipeline.
-    Returns the full response after all agents complete.
-    """
-    session_id = str(request.session_id)
-
-    # Validate session exists
-    session = await db_service.get_session(session_id)
-    if not session:
-        raise HTTPException(status_code=404, detail="Session not found")
-
-    try:
-        # Save user message
-        await db_service.save_message(
-            session_id=session_id,
-            role="user",
-            content=request.message,
-            phase=session.get("current_phase"),
-        )
-
-        # Restore existing state from session metadata
-        existing_state = session.get("metadata", {}).get("graph_state") or {}
-
-        # Only pass recent context — not full history to avoid replay loops
-        message_history = await db_service.get_messages(session_id)
-
-        # Keep only last 6 messages for context (3 turns)
-        recent_messages = message_history[-6:] if len(message_history) > 6 else message_history
-        graph_messages = [
-            {"role": msg["role"], "content": msg["content"]}
-            for msg in recent_messages
-        ]
-
-        if existing_state:
-            existing_state["messages"] = graph_messages
-        else:
-            existing_state = {"messages": graph_messages}
-
-        # Run the LangGraph pipeline
-        final_state = await run_graph(
-            session_id=session_id,
-            user_input=request.message,
-            existing_state=existing_state,
-        )
-
-        # Extract the latest assistant message
-        assistant_messages = [
-            m for m in final_state.get("messages", [])
-            if m.get("role") == "assistant"
-        ]
-        latest_response = assistant_messages[-1]["content"] if assistant_messages else "No response generated."
-
-        # Persist updates to database
-        await _persist_state_updates(session_id, final_state)
-
-        return {
-            "success": True,
-            "session_id": session_id,
-            "response": latest_response,
-            "current_phase": final_state.get("current_phase"),
-            "workflow_complete": final_state.get("workflow_complete", False),
-        }
-
-    except Exception as e:
-        logger.error(f"Chat error: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@router.post("/chat/stream", summary="Stream chat response")
-async def chat_stream(request: ChatRequest):
-    """
-    Streaming chat endpoint.
-    Yields Server-Sent Events (SSE) as each agent node completes.
-    Useful for showing real-time progress in the frontend.
-    """
-    session_id = str(request.session_id)
-
-    session = await db_service.get_session(session_id)
-    if not session:
-        raise HTTPException(status_code=404, detail="Session not found")
-
-    # Save user message before streaming
-    await db_service.save_message(
-        session_id=session_id,
-        role="user",
-        content=request.message,
-        phase=session.get("current_phase"),
-    )
-
-    existing_state = session.get("metadata", {}).get("graph_state") or {}
-
-    # Load message history from database
-    message_history = await db_service.get_messages(session_id)
-    graph_messages = [
-        {"role": msg["role"], "content": msg["content"]}
-        for msg in message_history
-    ]
-
-    # Inject message history into existing state
-    if existing_state:
-        existing_state["messages"] = graph_messages
-    else:
-        existing_state = {"messages": graph_messages}
-
-    async def event_generator():
-        """Generate SSE events as each agent node completes."""
-        final_state = None
-        sent_message_contents = set()  # Track already-sent messages
-
-        try:
-            async for update in run_graph_stream(
-                session_id=session_id,
-                user_input=request.message,
-                existing_state=existing_state,
-            ):
-                node_name = update["node"]
-                partial_state = update["state"]
-                final_state = partial_state
-
-                # Get all assistant messages from this node's state
-                messages = partial_state.get("messages", [])
-                
-                # Find messages we haven't sent yet
-                new_content = ""
-                messages = partial_state.get("messages", [])
-
-                for msg in reversed(messages):
-                    if msg.get("role") == "assistant":
-                        content = msg.get("content", "")
-                        content_key = hash(content[:100])
-                        if content_key not in sent_message_contents:
-                            sent_message_contents.add(content_key)
-                            new_content = content
-                        break
-
-                if not new_content:
-                    continue
-
-                raw_phase = partial_state.get("current_phase")
-                phase_str = raw_phase.value if hasattr(raw_phase, "value") else str(raw_phase)
-                logger.info(f"[Stream] phase value: {raw_phase} | type: {type(raw_phase)}")
-
-                event_data = {
-                    "node": node_name,
-                    "phase": phase_str,
-                    "content": new_content,
-                    "workflow_complete": partial_state.get("workflow_complete", False),
-                }
-
-                yield f"data: {json.dumps(event_data)}\n\n"
-
-            # Final "done" event
-            yield f"data: {json.dumps({'node': 'done', 'phase': 'complete'})}\n\n"
-
-            # Persist final state
-            if final_state:
-                await _persist_state_updates(session_id, final_state)
-
-        except Exception as e:
-            logger.error(f"Streaming error: {e}")
-            yield f"data: {json.dumps({'node': 'error', 'content': str(e)})}\n\n"
-    return StreamingResponse(
-        event_generator(),
-        media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "X-Accel-Buffering": "no",
-        },
-    )
-
-
-# ------------------------------------------------------------------
 # HELPERS
 # ------------------------------------------------------------------
+
+def _build_existing_state(session: dict, message_history: list[dict]) -> dict:
+    """
+    Reconstruct the full graph state from persisted session data.
+
+    This is the single source of truth for state restoration.
+    It merges the saved graph_state (requirements, tech_stack, etc.)
+    with fresh message history from the DB.
+
+    Args:
+        session:         The session record from Supabase
+        message_history: All messages for the session from Supabase
+
+    Returns:
+        A complete state dict ready to pass into run_graph / run_graph_stream
+    """
+    graph_state = session.get("metadata", {}).get("graph_state") or {}
+
+    # Convert phase string back to Phase enum so the graph router works correctly
+    raw_phase = graph_state.get("current_phase", "planner")
+    try:
+        phase = Phase(raw_phase)
+    except (ValueError, KeyError):
+        phase = Phase.PLANNER
+
+    # Trim message history to last 10 messages to avoid bloating the prompt
+    recent_messages = message_history[-10:] if len(message_history) > 10 else message_history
+    graph_messages = [
+        {"role": msg["role"], "content": msg["content"]}
+        for msg in recent_messages
+    ]
+
+    return {
+        "current_phase":           phase,
+        "messages":                graph_messages,
+        "requirements":            graph_state.get("requirements") or "",
+        "architecture":            graph_state.get("architecture") or "",
+        "tech_stack":              graph_state.get("tech_stack") or {},
+        "roadmap":                 graph_state.get("roadmap") or [],
+        "identified_technologies": graph_state.get("identified_technologies") or [],
+        "implementation_hints":    graph_state.get("implementation_hints") or [],
+        "iteration_count":         graph_state.get("iteration_count") or 0,
+        "workflow_complete":       graph_state.get("workflow_complete") or False,
+        "metadata":                session.get("metadata") or {},
+    }
+
 
 async def _persist_state_updates(session_id: str, state: dict):
     """
@@ -323,7 +194,7 @@ async def _persist_state_updates(session_id: str, state: dict):
         current_phase = state.get("current_phase")
         phase_value = None
         if current_phase:
-            phase_value = current_phase.value if hasattr(current_phase, 'value') else str(current_phase)
+            phase_value = current_phase.value if hasattr(current_phase, "value") else str(current_phase)
             await db_service.update_session_phase(session_id, phase_value)
 
         # Save assistant messages — deduplicated against what's already in DB
@@ -368,17 +239,17 @@ async def _persist_state_updates(session_id: str, state: dict):
                 scaffolds=state["code_scaffolds"],
             )
 
-        # Store serializable graph state in session metadata
+        # Store serializable graph state in session metadata for next turn
         serializable_state = {
-            "current_phase": phase_value or "planner",
-            "requirements": state.get("requirements"),
-            "architecture": state.get("architecture"),
-            "tech_stack": state.get("tech_stack", {}),
+            "current_phase":           phase_value or "planner",
+            "requirements":            state.get("requirements"),
+            "architecture":            state.get("architecture"),
+            "tech_stack":              state.get("tech_stack", {}),
             "identified_technologies": state.get("identified_technologies", []),
-            "implementation_hints": state.get("implementation_hints", []),
-            "iteration_count": state.get("iteration_count", 0),
-            "workflow_complete": state.get("workflow_complete", False),
-            "roadmap": state.get("roadmap", []),
+            "implementation_hints":    state.get("implementation_hints", []),
+            "iteration_count":         state.get("iteration_count", 0),
+            "workflow_complete":       state.get("workflow_complete", False),
+            "roadmap":                 state.get("roadmap", []),
         }
         await db_service.update_session_metadata(
             session_id,
@@ -387,3 +258,152 @@ async def _persist_state_updates(session_id: str, state: dict):
 
     except Exception as e:
         logger.error(f"State persistence error: {e}")
+
+
+# ------------------------------------------------------------------
+# CHAT (Main orchestration endpoint)
+# ------------------------------------------------------------------
+
+@router.post("/chat", summary="Send a message to the Architect")
+async def chat(request: ChatRequest):
+    """
+    Main chat endpoint.
+    Routes the message through the LangGraph orchestration pipeline.
+    Returns the full response after all agents complete.
+    """
+    session_id = str(request.session_id)
+
+    session = await db_service.get_session(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    try:
+        # Save user message
+        await db_service.save_message(
+            session_id=session_id,
+            role="user",
+            content=request.message,
+            phase=session.get("current_phase"),
+        )
+
+        # Reconstruct full graph state from persisted data
+        message_history = await db_service.get_messages(session_id)
+        existing_state = _build_existing_state(session, message_history)
+
+        # Run the LangGraph pipeline
+        final_state = await run_graph(
+            session_id=session_id,
+            user_input=request.message,
+            existing_state=existing_state,
+        )
+
+        # Extract the latest assistant message
+        assistant_messages = [
+            m for m in final_state.get("messages", [])
+            if m.get("role") == "assistant"
+        ]
+        latest_response = assistant_messages[-1]["content"] if assistant_messages else "No response generated."
+
+        # Persist updates to database
+        await _persist_state_updates(session_id, final_state)
+
+        return {
+            "success": True,
+            "session_id": session_id,
+            "response": latest_response,
+            "current_phase": final_state.get("current_phase"),
+            "workflow_complete": final_state.get("workflow_complete", False),
+        }
+
+    except Exception as e:
+        logger.error(f"Chat error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/chat/stream", summary="Stream chat response")
+async def chat_stream(request: ChatRequest):
+    """
+    Streaming chat endpoint.
+    Yields Server-Sent Events (SSE) as each agent node completes.
+    """
+    session_id = str(request.session_id)
+
+    session = await db_service.get_session(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    # Save user message before streaming
+    await db_service.save_message(
+        session_id=session_id,
+        role="user",
+        content=request.message,
+        phase=session.get("current_phase"),
+    )
+
+    # Reconstruct full graph state from persisted data
+    message_history = await db_service.get_messages(session_id)
+    existing_state = _build_existing_state(session, message_history)
+
+    async def event_generator():
+        """Generate SSE events as each agent node completes."""
+        final_state = None
+        sent_message_contents = set()
+
+        try:
+            async for update in run_graph_stream(
+                session_id=session_id,
+                user_input=request.message,
+                existing_state=existing_state,
+            ):
+                node_name = update["node"]
+                partial_state = update["state"]
+                final_state = partial_state
+
+                # Find the latest unsent assistant message
+                new_content = ""
+                messages = partial_state.get("messages", [])
+
+                for msg in reversed(messages):
+                    if msg.get("role") == "assistant":
+                        content = msg.get("content", "")
+                        content_key = hash(content[:100])
+                        if content_key not in sent_message_contents:
+                            sent_message_contents.add(content_key)
+                            new_content = content
+                        break
+
+                if not new_content:
+                    continue
+
+                raw_phase = partial_state.get("current_phase")
+                phase_str = raw_phase.value if hasattr(raw_phase, "value") else str(raw_phase)
+                logger.info(f"[Stream] phase value: {raw_phase} | type: {type(raw_phase)}")
+
+                event_data = {
+                    "node": node_name,
+                    "phase": phase_str,
+                    "content": new_content,
+                    "workflow_complete": partial_state.get("workflow_complete", False),
+                }
+
+                yield f"data: {json.dumps(event_data)}\n\n"
+
+            # Final "done" event
+            yield f"data: {json.dumps({'node': 'done', 'phase': 'complete'})}\n\n"
+
+            # Persist final state
+            if final_state:
+                await _persist_state_updates(session_id, final_state)
+
+        except Exception as e:
+            logger.error(f"Streaming error: {e}")
+            yield f"data: {json.dumps({'node': 'error', 'content': str(e)})}\n\n"
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
+    )
