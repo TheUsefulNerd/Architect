@@ -27,7 +27,10 @@ DOCS_COLLECTION = "documentation_embeddings"
 CONV_COLLECTION = "conversation_embeddings"
 CODE_COLLECTION = "code_patterns"
 
-# Gemini embedding model — text-embedding-004 is the current supported model
+# Gemini embedding model
+# text-embedding-004 requires google-generativeai >= 0.5.0 (uses v1 endpoint)
+# If you see a 404 on v1beta, upgrade the SDK: pip install -U google-generativeai
+# or fall back to: "models/embedding-001"
 EMBEDDING_MODEL = "models/text-embedding-004"
 
 
@@ -117,7 +120,15 @@ class VectorService:
             )
             return result["embedding"]
         except Exception as e:
-            logger.error(f"Embedding error: {e}")
+            if "not found" in str(e).lower() or "404" in str(e):
+                logger.error(
+                    f"Embedding model not found: {e}. "
+                    "Fix: run `pip install -U google-generativeai` or change "
+                    "EMBEDDING_MODEL to 'models/embedding-001' in vector_service.py"
+                )
+                self.enabled = False  # disable to avoid repeated 404s
+            else:
+                logger.error(f"Embedding error: {e}")
             return []
 
     async def embed_query(self, text: str) -> list[float]:
@@ -142,7 +153,15 @@ class VectorService:
             )
             return result["embedding"]
         except Exception as e:
-            logger.error(f"Query embedding error: {e}")
+            if "not found" in str(e).lower() or "404" in str(e):
+                logger.error(
+                    f"Embedding model not found: {e}. "
+                    "Fix: run `pip install -U google-generativeai` or change "
+                    "EMBEDDING_MODEL to 'models/embedding-001' in vector_service.py"
+                )
+                self.enabled = False
+            else:
+                logger.error(f"Query embedding error: {e}")
             return []
 
     # ------------------------------------------------------------------

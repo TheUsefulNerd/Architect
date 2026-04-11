@@ -206,8 +206,8 @@ async def run_graph_stream(
     # Always start from a proper initial state
     state = create_initial_state(session_id, user_input)
 
-    # Merge existing state on top if we have real data
-    if existing_state and existing_state.get("current_phase"):
+    # Merge existing state on top if we have any real data
+    if existing_state and (existing_state.get("current_phase") or existing_state.get("requirements")):
         state = {
             "session_id":              session_id,
             "current_phase":           existing_state.get("current_phase", Phase.PLANNER),
