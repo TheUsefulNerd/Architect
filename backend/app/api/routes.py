@@ -375,7 +375,16 @@ async def chat_stream(request: ChatRequest):
             ):
                 node_name = update["node"]
                 partial_state = update["state"]
-                final_state = partial_state
+
+                # Merge partial state into final_state so fields from earlier
+                # nodes (e.g. documentation_links from Librarian) are not lost
+                # when a later node (Mentor) returns a partial state without them
+                if final_state is None:
+                    final_state = dict(partial_state)
+                else:
+                    for key, value in partial_state.items():
+                        if value is not None and value != [] and value != {}:
+                            final_state[key] = value
 
                 # Find the latest unsent assistant message
                 new_content = ""
