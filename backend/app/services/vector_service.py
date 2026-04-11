@@ -27,6 +27,9 @@ DOCS_COLLECTION = "documentation_embeddings"
 CONV_COLLECTION = "conversation_embeddings"
 CODE_COLLECTION = "code_patterns"
 
+# Gemini embedding model — text-embedding-004 is the current supported model
+EMBEDDING_MODEL = "models/text-embedding-004"
+
 
 class VectorService:
     """
@@ -57,7 +60,7 @@ class VectorService:
         """Create Qdrant collections if they don't already exist."""
         if not self.enabled:
             return
-            
+
         try:
             existing = [c.name for c in self.client.get_collections().collections]
         except Exception as e:
@@ -105,10 +108,10 @@ class VectorService:
         if not self.enabled:
             logger.warning("Vector service is disabled - returning empty embedding")
             return []
-            
+
         try:
             result = genai.embed_content(
-                model=settings.embedding_model,
+                model=EMBEDDING_MODEL,
                 content=text,
                 task_type="retrieval_document",
             )
@@ -130,10 +133,10 @@ class VectorService:
         if not self.enabled:
             logger.warning("Vector service is disabled - returning empty embedding")
             return []
-            
+
         try:
             result = genai.embed_content(
-                model=settings.embedding_model,
+                model=EMBEDDING_MODEL,
                 content=text,
                 task_type="retrieval_query",
             )
@@ -170,13 +173,13 @@ class VectorService:
         if not self.enabled:
             logger.warning("Vector service disabled - skipping doc storage")
             return ""
-            
+
         try:
-            self._ensure_collections()  # Lazy init collections
+            self._ensure_collections()
             vector = await self.embed(content)
             if not vector:
                 return ""
-                
+
             point_id = str(uuid4())
 
             self.client.upsert(
@@ -220,7 +223,7 @@ class VectorService:
         if not self.enabled:
             logger.warning("Vector service disabled - skipping doc search")
             return []
-            
+
         try:
             self._ensure_collections()
             query_vector = await self.embed_query(query)
@@ -420,7 +423,7 @@ class VectorService:
         """
         if not self.enabled:
             return []
-            
+
         try:
             self._ensure_collections()
             query_vector = await self.embed_query(query)

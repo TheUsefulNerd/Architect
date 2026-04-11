@@ -123,9 +123,9 @@ async def mentor_node(state: AgentState) -> dict[str, Any]:
         )
 
         parsed = _parse_mentor_response(response_text)
-        scaffolds    = parsed.get("scaffolds", [])
-        impl_hints   = parsed.get("implementation_hints", [])
-        first_steps  = parsed.get("first_steps", "")
+        scaffolds     = parsed.get("scaffolds", [])
+        impl_hints    = parsed.get("implementation_hints", [])
+        first_steps   = parsed.get("first_steps", "")
         chat_response = parsed.get("chat_response", "")
 
         # Fallback chat message if model didn't follow format
@@ -141,11 +141,11 @@ async def mentor_node(state: AgentState) -> dict[str, Any]:
             "messages": [
                 {"role": "assistant", "content": chat_response}
             ],
-            "current_phase":       Phase.MENTOR,
-            "code_scaffolds":      scaffolds,
+            "current_phase":        Phase.MENTOR,
+            "code_scaffolds":       scaffolds,
             "implementation_hints": impl_hints,
-            "workflow_complete":   True,
-            "needs_clarification": False,
+            "workflow_complete":    True,
+            "needs_clarification":  False,
             "metadata": {
                 **state.get("metadata", {}),
                 "mentor_status":  "complete",
@@ -181,13 +181,37 @@ async def _fetch_relevant_patterns(requirements: str, tech_stack: dict) -> list[
         return []
 
 
+def _extract_message_parts(msg: Any) -> tuple[str, str]:
+    """
+    Safely extract (role, content) from either a plain dict or a
+    LangChain message object (HumanMessage, AIMessage, etc.).
+    """
+    # LangChain message objects have a .content attribute and a class name
+    if hasattr(msg, "content"):
+        class_name = msg.__class__.__name__.lower()
+        if "human" in class_name:
+            role = "user"
+        elif "ai" in class_name or "assistant" in class_name:
+            role = "assistant"
+        else:
+            role = "user"
+        return role, str(msg.content)
+
+    # Plain dict (our standard internal format)
+    if isinstance(msg, dict):
+        return msg.get("role", ""), msg.get("content", "")
+
+    # Fallback — stringify whatever it is
+    return "user", str(msg)
+
+
 def _build_mentor_prompt(
     requirements: str,
     architecture: str,
     tech_stack: dict,
     docs: list[dict],
     patterns: list[dict],
-    conversation_history: list[dict] = [],
+    conversation_history: list = [],
 ) -> str:
     """Assemble the full prompt for scaffold generation and follow-up guidance."""
 
@@ -212,8 +236,7 @@ def _build_mentor_prompt(
     if conversation_history:
         history_context = "\n## Recent Conversation\n"
         for msg in conversation_history:
-            role    = msg.get("role", "")
-            content = msg.get("content", "")
+            role, content = _extract_message_parts(msg)
             if role in ("user", "assistant") and content:
                 prefix    = "User" if role == "user" else "Mentor"
                 truncated = content[:300] + "..." if len(content) > 300 else content
