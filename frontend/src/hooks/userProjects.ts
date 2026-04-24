@@ -6,9 +6,11 @@
 
 import { useState, useEffect, useCallback } from "react";
 import { projectsApi } from "@/lib/api";
+import { useAuth } from "@/hooks/useAuth";
 import type { ProjectResponse, ProjectCreateRequest } from "@/types";
 
 export function useProjects() {
+  const { user, loading: authLoading } = useAuth();
   const [projects, setProjects] = useState<ProjectResponse[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -27,8 +29,14 @@ export function useProjects() {
   }, []);
 
   useEffect(() => {
+    // Wait until auth is resolved and user is present before fetching
+    if (authLoading) return;
+    if (!user) {
+      setLoading(false);
+      return;
+    }
     fetchProjects();
-  }, []); // Empty dependency array - only fetch once on mount
+  }, [authLoading, user, fetchProjects]);
 
   const createProject = async (data: ProjectCreateRequest) => {
     const project = await projectsApi.create(data);
@@ -43,7 +51,7 @@ export function useProjects() {
 
   return {
     projects,
-    loading,
+    loading: authLoading || loading,
     error,
     refetch: fetchProjects,
     createProject,

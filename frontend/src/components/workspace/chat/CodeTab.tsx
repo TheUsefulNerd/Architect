@@ -5,13 +5,27 @@
 "use client";
 
 import { useState } from "react";
-import { Code2, FileCode, ChevronRight } from "lucide-react";
+import { Code2, FileCode, ChevronRight, RefreshCw } from "lucide-react";
 import { useProjectStore } from "@/stores/useProjectStore";
+import { sessionsApi } from "@/lib/api";
 import { SyntaxHighlighter } from "@/components/workspace/chat/SyntaxHighlighter";
 
 export function CodeTab() {
-  const scaffolds    = useProjectStore((s) => s.scaffolds);
+  const scaffolds     = useProjectStore((s) => s.scaffolds);
+  const activeSession = useProjectStore((s) => s.activeSession);
   const [activeFile, setActiveFile] = useState<number>(0);
+  const [refreshing, setRefreshing] = useState(false);
+
+  const handleRefresh = async () => {
+    if (!activeSession) return;
+    setRefreshing(true);
+    try {
+      const data = await sessionsApi.getScaffolds(activeSession.id);
+      if (data.length > 0) useProjectStore.getState().setScaffolds(data);
+    } finally {
+      setRefreshing(false);
+    }
+  };
 
   if (scaffolds.length === 0) {
     return (
@@ -28,6 +42,14 @@ export function CodeTab() {
         <p className="max-w-xs text-sm text-slate-600">
           Scaffolds will appear here once the Mentor phase completes.
         </p>
+        <button
+          onClick={handleRefresh}
+          disabled={refreshing}
+          className="mt-4 flex items-center gap-2 rounded-lg border border-violet-500/20 bg-violet-500/10 px-3 py-1.5 text-xs text-violet-400 transition hover:bg-violet-500/20 disabled:opacity-50"
+        >
+          <RefreshCw className={`h-3 w-3 ${refreshing ? "animate-spin" : ""}`} />
+          {refreshing ? "Loading…" : "Load scaffolds"}
+        </button>
       </div>
     );
   }
