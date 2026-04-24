@@ -30,18 +30,34 @@ class DatabaseService:
     # PROJECTS
     # ------------------------------------------------------------------
 
-    async def create_project(self, name: str, description: Optional[str] = None) -> dict:
+    # CHANGE create_project signature to accept user_id
+    async def create_project(self, user_id: str, name: str, description: Optional[str] = None) -> dict:
         """Create a new project."""
         try:
             response = self.client.table("projects").insert({
                 "name": name,
                 "description": description,
-                "status": "in_progress"
+                "status": "in_progress",
+                "user_id": user_id          # <-- add this
             }).execute()
             return response.data[0]
         except Exception as e:
             logger.error(f"Error creating project: {e}")
             raise
+
+    # CHANGE list_projects to filter by user_id
+    async def list_projects(self, user_id: str) -> list[dict]:
+        """Fetch all projects for a user, ordered by created_at descending."""
+        try:
+            response = self.client.table("projects")\
+                .select("*")\
+                .eq("user_id", user_id)\
+                .order("created_at", desc=True)\
+                .execute()
+            return response.data
+        except Exception as e:
+            logger.error(f"Error listing projects: {e}")
+            return []
 
     async def get_project(self, project_id: str) -> Optional[dict]:
         """Fetch a project by ID."""
@@ -56,28 +72,18 @@ class DatabaseService:
             logger.error(f"Error fetching project {project_id}: {e}")
             return None
     
-    async def delete_project(self, project_id: str) -> None:
-        """Delete a project by ID."""
+    async def delete_project(self, project_id: str, user_id: str) -> None:
+        """Delete a project by ID, scoped to the owning user."""
         try:
             self.client.table("projects")\
                 .delete()\
                 .eq("id", project_id)\
+                .eq("user_id", user_id)\
                 .execute()
         except Exception as e:
             logger.error(f"Error deleting project {project_id}: {e}")
             raise
     
-    async def list_projects(self) -> list[dict]:
-        """Fetch all projects ordered by created_at descending."""
-        try:
-            response = self.client.table("projects")\
-                .select("*")\
-                .order("created_at", desc=True)\
-                .execute()
-            return response.data
-        except Exception as e:
-            logger.error(f"Error listing projects: {e}")
-            return []
 
     # ------------------------------------------------------------------
     # SESSIONS

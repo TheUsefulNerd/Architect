@@ -27,10 +27,15 @@ router = APIRouter()
 # ------------------------------------------------------------------
 
 @router.post("/projects", summary="Create a new project")
-async def create_project(request: ProjectCreateRequest):
-    """Create a new project and return the project record."""
+async def create_project(
+    request: ProjectCreateRequest,
+    x_user_id: Optional[str] = Header(None)   # <-- add this
+):
+    if not x_user_id:
+        raise HTTPException(status_code=401, detail="Missing X-User-Id header")
     try:
         project = await db_service.create_project(
+            user_id=x_user_id,                 # <-- add this
             name=request.name,
             description=request.description
         )
@@ -40,11 +45,13 @@ async def create_project(request: ProjectCreateRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+# ── list_projects route ───────────────────────────────────────────────
 @router.get("/projects", summary="List all projects")
-async def list_projects():
-    """Fetch all projects."""
+async def list_projects(x_user_id: Optional[str] = Header(None)):  # <-- add param
+    if not x_user_id:
+        raise HTTPException(status_code=401, detail="Missing X-User-Id header")
     try:
-        projects = await db_service.list_projects()
+        projects = await db_service.list_projects(user_id=x_user_id)  # <-- pass it
         return {"success": True, "projects": projects}
     except Exception as e:
         logger.error(f"List projects error: {e}")
@@ -61,10 +68,14 @@ async def get_project(project_id: str):
 
 
 @router.delete("/projects/{project_id}", summary="Delete a project")
-async def delete_project(project_id: str):
-    """Delete a project by ID."""
+async def delete_project(
+    project_id: str,
+    x_user_id: Optional[str] = Header(None)
+):
+    if not x_user_id:
+        raise HTTPException(status_code=401, detail="Missing X-User-Id header")
     try:
-        await db_service.delete_project(project_id)
+        await db_service.delete_project(project_id, user_id=x_user_id)
         return {"success": True}
     except Exception as e:
         logger.error(f"Delete project error: {e}")

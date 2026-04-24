@@ -38,6 +38,7 @@ export const apiClient = axios.create({
 });
 
 // Attach Supabase JWT to every request (reuse client)
+// Attach Supabase JWT and user ID to every request
 apiClient.interceptors.request.use(async (config) => {
   try {
     const supabase = getSupabaseClient();
@@ -45,8 +46,10 @@ apiClient.interceptors.request.use(async (config) => {
     if (data.session?.access_token) {
       config.headers.Authorization = `Bearer ${data.session.access_token}`;
     }
+    if (data.session?.user?.id) {
+      config.headers["X-User-Id"] = data.session.user.id;  // <-- add this
+    }
   } catch (error) {
-    // Silently fail if session fetch fails
     console.debug("Failed to attach auth token:", error);
   }
   return config;
