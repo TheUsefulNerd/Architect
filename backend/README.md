@@ -1,163 +1,168 @@
-# Architect Backend
+# Architect — Backend
 
-AI-powered orchestration platform backend built with FastAPI and LangGraph.
+FastAPI + LangGraph backend for the Architect AI orchestration platform.
+
+**Live API:** `https://architect-c10k.onrender.com`
+
+---
 
 ## Tech Stack
 
-- **Framework**: FastAPI
-- **Agent Orchestration**: LangGraph
-- **LLM Providers**: Google Gemini, Groq
-- **Vector Database**: Qdrant Cloud
-- **Database**: Supabase (PostgreSQL)
-- **Package Manager**: Poetry
+| Layer | Technology |
+|---|---|
+| Framework | FastAPI |
+| Agent Orchestration | LangGraph |
+| Primary LLM | Groq — `llama-3.3-70b-versatile` |
+| Fallback LLM | Gemini — `gemini-2.5-flash` |
+| Vector DB | Qdrant Cloud |
+| Database | Supabase (PostgreSQL) |
+| Package Manager | Poetry |
 
-## Prerequisites
+---
 
-- Python 3.11+
-- Poetry (for dependency management)
-- Gemini API Key
-- Groq API Key
-- Qdrant Cloud account
-- Supabase project
+## Local Setup
 
-## Setup Instructions
+### Prerequisites
+- Python 3.11 (pinned — 3.12+ breaks grpcio-tools)
+- Poetry
 
-### 1. Install Poetry (if not already installed)
-
-**Windows (PowerShell):**
-```powershell
-(Invoke-WebRequest -Uri https://install.python-poetry.org -UseBasicParsing).Content | py -
-```
-
-Add Poetry to your PATH:
-```powershell
-$env:Path += ";$env:APPDATA\Python\Scripts"
-```
-
-### 2. Install Dependencies
-
+### 1. Install dependencies
 ```bash
 cd backend
 poetry install
 ```
 
-This will:
-- Create a virtual environment
-- Install all dependencies from pyproject.toml
-- Set up development tools (pytest, black, etc.)
-
-### 3. Environment Configuration
-
-Copy the example environment file:
+### 2. Configure environment
 ```bash
 cp .env.example .env
 ```
 
-Edit `.env` and add your API keys:
+Fill in `backend/.env`:
 ```env
-GEMINI_API_KEY=your_actual_gemini_key
-GROQ_API_KEY=your_actual_groq_key
-QDRANT_URL=your_qdrant_cloud_url
-QDRANT_API_KEY=your_qdrant_key
-SUPABASE_URL=your_supabase_url
-SUPABASE_KEY=your_supabase_anon_key
-SUPABASE_SERVICE_KEY=your_supabase_service_key
+GEMINI_API_KEY=            # Google AI Studio
+GROQ_API_KEY=              # console.groq.com
+QDRANT_URL=                # cloud.qdrant.io
+QDRANT_API_KEY=
+SUPABASE_URL=              # supabase.com dashboard
+SUPABASE_KEY=              # anon key
+SUPABASE_SERVICE_KEY=      # service role key
+CORS_ORIGINS=http://localhost:3000
+ENVIRONMENT=development
+DEBUG=true
 ```
 
-### 4. Database Setup
-
-Run the SQL scripts in `docs/database_setup.sql` in your Supabase SQL editor to create tables.
-
-### 5. Run the Development Server
-
+### 3. Run the server
 ```bash
 poetry run uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 ```
 
-Or activate the virtual environment first:
-```bash
-poetry shell
-uvicorn app.main:app --reload
-```
+API docs: `http://localhost:8000/docs`
+Health check: `http://localhost:8000/health`
 
-The API will be available at: `http://localhost:8000`
-API Documentation: `http://localhost:8000/docs`
+---
 
-## Project Structure
+## LLM Architecture
+
+Groq is the primary LLM. Gemini is the fallback. Both have independent exponential backoff retry loops (5 attempts: 2→4→8→16s) before the fallback triggers. The public method names (`gemini_chat`, `gemini_generate`, `gemini_stream`) are unchanged so no agent code needs to know which provider is running.
 
 ```
-backend/
-├── app/
-│   ├── agents/          # LangGraph agents (Planner, Librarian, Mentor)
-│   ├── services/        # Business logic services
-│   ├── models/          # Pydantic models and state definitions
-│   ├── api/             # FastAPI routes and WebSocket handlers
-│   ├── utils/           # Helper utilities
-│   ├── config.py        # Configuration management
-│   └── main.py          # FastAPI application entry point
-├── tests/               # Unit and integration tests
-├── pyproject.toml       # Poetry dependencies and config
-└── .env                 # Environment variables (not in git)
+Request → Groq (retry x5) → [fail] → Gemini (retry x5) → [fail] → raise
 ```
 
-## Development Commands
+---
 
-### Running Tests
-```bash
-poetry run pytest
+## Agent Workflow
+
+```
+User message → Router → Planner → Librarian → Mentor → Response
+                  ↑_____________________________|
+                  (continuing conversation skips to Mentor)
 ```
 
-### Code Formatting
-```bash
-poetry run black app/
-poetry run isort app/
-```
+### Planner (`agents/planner.py`)
+Gathers requirements via Socratic conversation. Outputs a Technical Spec: requirements, architecture, tech stack, and a roadmap. Transitions to Librarian when spec is ready.
 
-### Type Checking
-```bash
-poetry run mypy app/
-```
+### Librarian (`agents/librarian.py`)
+Crawls official documentation for each technology in the tech stack. Stores embeddings in Qdrant. Synthesises a cited, Perplexity-style response. Transitions to Mentor when docs are ready.
 
-### Linting
-```bash
-poetry run flake8 app/
-```
+### Mentor (`agents/mentor.py`)
+Generates code scaffolds with intentional TODOs and Socratic hints. Guides implementation conversationally. Never rewrites the user's code completely.
+
+---
+
+## State Restoration (Cold Start)
+
+Render's free tier spins down after 15 minutes. On restart, all in-memory state is lost. State is restored in `routes.py` via `_build_existing_state()`:
+
+1. Reads `graph_state` from session metadata in Supabase
+2. Falls back to `technical_specs` table if `requirements` is null (handles older sessions)
+3. Converts phase string back to `Phase` enum before passing to the graph
+
+---
 
 ## API Endpoints
 
-- `POST /api/projects` - Create a new project
-- `POST /api/sessions` - Create a new session
-- `POST /api/chat` - Send a message to the orchestration system
-- `GET /api/sessions/{session_id}` - Get session details
-- `WebSocket /ws/{session_id}` - Real-time streaming updates
+```
+POST   /api/projects                         Create project
+GET    /api/projects                         List projects
+GET    /api/projects/{id}                    Get project
+DELETE /api/projects/{id}                    Delete project
 
-## LangGraph Workflow
+POST   /api/sessions                         Create session
+GET    /api/sessions?project_id={id}         Get session by project
+GET    /api/sessions/{id}                    Get session
+GET    /api/sessions/{id}/messages           Get message history
+GET    /api/sessions/{id}/spec               Get technical spec
+GET    /api/sessions/{id}/docs               Get documentation links
+GET    /api/sessions/{id}/scaffolds          Get code scaffolds
 
-1. **Planner Agent**: Analyzes user input → Generates technical spec
-2. **Librarian Agent**: Identifies tech stack → Finds documentation
-3. **Mentor Agent**: Creates code scaffolds → Provides implementation hints
-
-## Environment Variables Reference
-
-See `.env.example` for complete list of configuration options.
-
-## Troubleshooting
-
-### Poetry not found
-Make sure Poetry is in your PATH. Restart your terminal after installation.
-
-### Import errors
-Make sure you're in the Poetry virtual environment:
-```bash
-poetry shell
+POST   /api/chat                             Chat (blocking)
+POST   /api/chat/stream                      Chat (SSE streaming)
 ```
 
-### Database connection issues
-Verify your Supabase credentials in `.env` are correct.
+---
 
-## Next Steps
+## Deployment (Render)
 
-1. Set up Supabase database schema
-2. Configure Qdrant collections
-3. Implement agent logic
-4. Test the LangGraph workflow
+**Build command:**
+```
+poetry install --no-root
+```
+
+**Start command:**
+```
+poetry run uvicorn app.main:app --host 0.0.0.0 --port 10000
+```
+
+**Required environment variables on Render:**
+```
+GEMINI_API_KEY
+GROQ_API_KEY
+QDRANT_URL
+QDRANT_API_KEY
+SUPABASE_URL
+SUPABASE_KEY
+SUPABASE_SERVICE_KEY
+CORS_ORIGINS=https://architect-ochre.vercel.app,http://localhost:3000
+ENVIRONMENT=production
+DEBUG=false
+PYTHON_VERSION=3.11.0
+```
+
+### Known Render gotchas
+- Python must be pinned to 3.11 via `PYTHON_VERSION=3.11.0` env var — grpcio-tools is incompatible with 3.12+
+- Poetry 2.x removed the `pip` subcommand — never use `poetry pip ...` in build commands
+- Port must be hardcoded to `10000` — `$PORT` variable expansion is unreliable in the start command
+- Free tier cold starts (~30s) — set up a cron ping at [cron-job.org](https://cron-job.org) hitting `/health` every 10 minutes to keep it warm
+
+---
+
+## Development Commands
+
+```bash
+poetry run pytest                  # Run tests
+poetry run black app/              # Format code
+poetry run isort app/              # Sort imports
+poetry run mypy app/               # Type check
+poetry run flake8 app/             # Lint
+```

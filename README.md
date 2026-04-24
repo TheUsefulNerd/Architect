@@ -2,198 +2,171 @@
 
 > An AI-powered orchestration platform that transforms naive ideas into professional engineering implementations.
 
-## 🎯 Vision
+**Live:** [architect-ochre.vercel.app](https://architect-ochre.vercel.app) · **API:** [architect-c10k.onrender.com](https://architect-c10k.onrender.com)
 
-Architect uses a **Socratic Loop** methodology to guide users through system design and documentation research, empowering them to build rather than building for them.
+---
 
-## 🏗️ Architecture
+## Vision
 
-### Three-Phase Workflow
+Architect uses a **Socratic Loop** methodology — it guides users through system design and documentation research rather than building things for them. Every response is a nudge, not an answer.
 
-1. **Phase I - Planner**: Deconstructs user intent into a Technical Specification
-   - Requirements gathering
-   - Architecture design
-   - Technology stack selection
+---
 
-2. **Phase II - Librarian/Crawler**: Identifies knowledge gaps and provides documentation
-   - Analyzes tech stack from Planner
-   - Searches and scrapes relevant documentation
-   - Provides deep-links and citations (like AI web search)
+## Three-Phase Workflow
 
-3. **Phase III - Mentor**: Provides code scaffolding and implementation guidance
-   - Generates code scaffolds with intentional gaps
-   - Provides "hints" to force user implementation
-   - Guides through the learning process
+```
+User Idea → [Planner] → [Librarian] → [Mentor] → Implementation
+```
 
-## 🛠️ Tech Stack
+| Phase | Agent | What it does |
+|---|---|---|
+| I | **Planner** | Deconstructs intent into Requirements, Architecture, Tech Stack, and a Roadmap |
+| II | **Librarian** | Crawls official docs for the tech stack, stores embeddings in Qdrant, returns Perplexity-style cited responses |
+| III | **Mentor** | Generates code scaffolds with intentional gaps, guides implementation conversationally via Socratic hints |
 
-### Frontend - Yet to Develop
-- **Framework**: Next.js 15 (App Router)
-- **Styling**: Tailwind CSS
-- **Icons**: Lucide React
-- **Visualization**: React Flow (for roadmaps/workflows)
+---
+
+## Tech Stack
 
 ### Backend
-- **Framework**: FastAPI (Python)
-- **Agent Orchestration**: LangGraph (multi-agent system)
-- **LLM Providers**: Google Gemini, Groq
+| Layer | Technology |
+|---|---|
+| Framework | FastAPI (Python) |
+| Agent Orchestration | LangGraph |
+| Primary LLM | Groq — `llama-3.3-70b-versatile` |
+| Fallback LLM | Gemini — `gemini-2.5-flash` |
+| Vector DB | Qdrant Cloud |
+| Relational DB | Supabase (PostgreSQL) |
+| Package Manager | Poetry |
 
-### Databases
-- **Vector Database**: Qdrant Cloud (semantic search, embeddings)
-- **Relational Database**: Supabase (PostgreSQL)
+### Frontend
+| Layer | Technology |
+|---|---|
+| Framework | Next.js 15 (App Router) |
+| Language | TypeScript 5 |
+| Styling | Tailwind CSS — Deep Midnight theme |
+| Auth | Supabase Auth (`@supabase/ssr`) |
+| Visualization | React Flow |
+| State | Zustand 5 |
 
-### Infrastructure - Yet to Work on
-- **Cloud Platform**: Google Cloud Platform (GCP)
-  - Cloud Run (serverless containers)
-  - Artifact Registry (container images)
-- **IaC**: Terraform
-- **CI/CD**: GitHub Actions
+### Infrastructure
+| Layer | Technology |
+|---|---|
+| Frontend Deploy | Vercel |
+| Backend Deploy | Render |
+| Auth + DB | Supabase |
+| Vector DB | Qdrant Cloud |
+| CI/CD | GitHub Actions *(pending)* |
 
-## 🎨 Design Aesthetic
+---
 
-- **Entry**: Prompt-first interface
-- **Dashboard**: "Deep Midnight" dual-pane layout
-  - Left: React Flow roadmap visualization
-  - Right: Interactive chat interface
-
-## 📁 Project Structure
+## Project Structure
 
 ```
 architect/
-│
-├── 📄 README.md                  # Main project documentation
-├── 📄 QUICKSTART.md              # Step-by-step setup guide
-│
-├── 🐍 backend/
-│   ├── 📄 README.md              # Backend documentation
-│   ├── 📄 pyproject.toml         # Poetry dependencies
-│   ├── 📄 .env.example           # Environment variables template
-│   ├── 📄 .gitignore
-│   │
+├── backend/
 │   ├── app/
-│   │   ├── 📄 config.py          # Settings management
-│   │   ├── 📄 main.py            # FastAPI
-│   │   │
-│   │   ├── agents/               # 🤖 LangGraph agents
-│   │   │   ├── planner.py        # Phase I: Planner 
-│   │   │   ├── librarian.py      # Phase II: Librarian 
-│   │   │   ├── mentor.py         # Phase III: Mentor 
-│   │   │   └── graph.py          # LangGraph orchestration 
-│   │   │
-│   │   ├── services/             # 🛠️ Business logic
-│   │   │   ├── llm_service.py    # Gemini/Groq integration 
-│   │   │   ├── vector_service.py # Qdrant operations 
-│   │   │   ├── db_service.py     # Supabase operations 
-│   │   │   └── crawler_service.py# Web scraping 
-│   │   │
-│   │   ├── models/               #  Data structures
-│   │   │   ├── schemas.py        #  Pydantic models 
-│   │   │   └── state.py          #  LangGraph state 
-│   │   │
-│   │   ├── api/                  #  FastAPI routes
-│   │   │   ├── routes.py         #  API endpoints 
-│   │   │   └── websocket.py      #  Real-time updates (to build)
-│   │   │
-│   │   └── utils/                # 🔧 Helpers  (to build)
-│   │
-│   └── tests/                    # 🧪 Unit tests  (to build)
+│   │   ├── agents/               # LangGraph agents
+│   │   │   ├── planner.py        # Phase I
+│   │   │   ├── librarian.py      # Phase II
+│   │   │   ├── mentor.py         # Phase III
+│   │   │   └── graph.py          # Orchestration + routing
+│   │   ├── services/
+│   │   │   ├── llm_service.py    # Groq primary, Gemini fallback
+│   │   │   ├── vector_service.py # Qdrant operations
+│   │   │   ├── db_service.py     # Supabase CRUD
+│   │   │   └── crawler_service.py# Documentation web scraper
+│   │   ├── models/
+│   │   │   ├── schemas.py        # Pydantic models
+│   │   │   └── state.py          # LangGraph state (TypedDict)
+│   │   ├── api/
+│   │   │   └── routes.py         # All FastAPI endpoints
+│   │   ├── config.py             # Pydantic settings
+│   │   └── main.py               # FastAPI entry point
+│   ├── pyproject.toml
+│   └── poetry.lock
 │
-├── 🎨 frontend/                  # Next.js 15 (Phase 2)
-│   └── (to be built later)
+├── frontend/
+│   ├── app/
+│   │   ├── auth/                 # Login, register, callback
+│   │   ├── dashboard/            # Project list
+│   │   └── workspace/[projectId] # Dual-pane workspace
+│   ├── components/
+│   ├── hooks/
+│   ├── lib/
+│   └── stores/
 │
-├── ☁️ infrastructure/
-│   ├── terraform/                # IaC configs (Phase 3)
-│   └── docker/                   # Container configs (Phase 3)
-│
-├── 🔄 .github/workflows/         # CI/CD pipelines (Phase 3)
-│
-└── 📚 docs/
-    ├── 📄 database_setup.sql     #  Supabase schema 
-    ├── 📄 supabase_setup.md      #  Supabase guide 
-    └── 📄 poetry_setup.md        #  Poetry guide 
+└── docs/
+    ├── database_setup.sql
+    ├── supabase_setup.md
+    └── poetry_setup.md
 ```
 
-## 🚀 Getting Started
+---
 
-### Prerequisites
+## Getting Started
 
-- Python 3.11+
-- Node.js 18+ (for frontend, later)
-- Poetry (Python package manager)
-- API Keys:
-  - Google Gemini API
-  - Groq API
-  - Qdrant Cloud
-  - Supabase
+### Backend
 
-### Backend Setup
-
-1. **Install Poetry** (see `docs/poetry_setup.md`)
-
-2. **Install dependencies:**
-   ```bash
-   cd backend
-   poetry install
-   ```
-
-3. **Set up environment variables:**
-   ```bash
-   cp .env.example .env
-   # Edit .env with your API keys
-   ```
-
-4. **Set up Supabase** (see `docs/supabase_setup.md`)
-   - Create a Supabase project
-   - Run the SQL schema from `docs/database_setup.sql`
-   - Add Supabase credentials to `.env`
-
-5. **Configure Qdrant:**
-   - Create collections in Qdrant Cloud
-   - Add credentials to `.env`
-
-6. **Run the development server:**
-   ```bash
-   poetry run uvicorn app.main:app --reload
-   ```
-
-Visit: http://localhost:8000/docs for API documentation
-
-### Frontend Setup
-
-(Coming soon - Next.js 15 with App Router)
-
-## 📚 Documentation
-
-- [Poetry Setup Guide](docs/poetry_setup.md) - Install and use Poetry on Windows
-- [Supabase Setup Guide](docs/supabase_setup.md) - Configure Supabase database
-- [Database Schema](docs/database_setup.sql) - SQL schema for Supabase
-- [Backend README](backend/README.md) - Backend-specific documentation
-
-## 🧪 Development
-
-### Running Tests
 ```bash
 cd backend
-poetry run pytest
+poetry install
+cp .env.example .env   # fill in your keys
+poetry run uvicorn app.main:app --reload --port 8000
 ```
 
-### Code Formatting
+### Frontend
+
 ```bash
-poetry run black app/
-poetry run isort app/
+cd frontend
+npm install
+cp .env.local.example .env.local   # fill in your keys
+npm run dev
 ```
 
-### Type Checking
-```bash
-poetry run mypy app/
+See [`docs/poetry_setup.md`](docs/poetry_setup.md) and [`docs/supabase_setup.md`](docs/supabase_setup.md) for detailed setup.
+
+---
+
+## Environment Variables
+
+### Backend (`backend/.env`)
+```env
+GEMINI_API_KEY=
+GROQ_API_KEY=
+QDRANT_URL=
+QDRANT_API_KEY=
+SUPABASE_URL=
+SUPABASE_KEY=
+SUPABASE_SERVICE_KEY=
+CORS_ORIGINS=http://localhost:3000
+ENVIRONMENT=development
 ```
 
-## 🏛️ Design Principles
+### Frontend (`frontend/.env.local`)
+```env
+NEXT_PUBLIC_SUPABASE_URL=
+NEXT_PUBLIC_SUPABASE_ANON_KEY=
+NEXT_PUBLIC_BACKEND_URL=http://localhost:8000
+```
 
-1. **Socratic Teaching**: Guide, don't build for the user
-2. **Documentation First**: Always link to official docs
-3. **Intentional Gaps**: Code scaffolds with learning opportunities
-4. **Clean Code**: Proper formatting and documentation
-5. **Stable Structure**: Single file structure, maintained consistently
+---
 
+## Design Principles
 
+1. **Socratic Teaching** — Guide, don't build for the user
+2. **Documentation First** — Always link to official sources
+3. **Intentional Gaps** — Scaffolds leave TODOs the user must fill
+4. **Clean Code** — Proper formatting and inline documentation
+5. **Stable Structure** — Single file structure, never reorganised between updates
+
+---
+
+## Deployment
+
+| Service | URL |
+|---|---|
+| Frontend (Vercel) | `https://architect-ochre.vercel.app` |
+| Backend (Render) | `https://architect-c10k.onrender.com` |
+
+See [`backend/README.md`](backend/README.md) for Render-specific deployment notes.
