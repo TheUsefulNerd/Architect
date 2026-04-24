@@ -43,11 +43,12 @@ apiClient.interceptors.request.use(async (config) => {
   try {
     const supabase = getSupabaseClient();
     const { data } = await supabase.auth.getSession();
+    console.log("Session user ID:", data.session?.user?.id); // <-- add this
     if (data.session?.access_token) {
       config.headers.Authorization = `Bearer ${data.session.access_token}`;
     }
     if (data.session?.user?.id) {
-      config.headers["X-User-Id"] = data.session.user.id;  // <-- add this
+      config.headers["X-User-Id"] = data.session.user.id;
     }
   } catch (error) {
     console.debug("Failed to attach auth token:", error);
