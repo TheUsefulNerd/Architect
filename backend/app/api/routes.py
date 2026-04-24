@@ -8,6 +8,7 @@ from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, Query, Header
 from fastapi.responses import StreamingResponse
+from typing import Optional
 
 from app.agents.graph import run_graph, run_graph_stream
 from app.models.schemas import (
