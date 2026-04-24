@@ -5,16 +5,11 @@
 import { redirect } from "next/navigation";
 import Link from "next/link";
 import {
-  FolderOpen,
-  Clock,
-  CheckCircle2,
-  Circle,
   Layers,
   LogOut,
   User,
 } from "lucide-react";
 import { createClient } from "@/lib/supabase/server";
-import { formatDate, statusColors, statusLabels } from "@/lib/utils";
 import { CreateProjectDialog } from "@/components/dashboard/CreateProjectDialog";
 import { ProjectsList } from "@/components/dashboard/ProjectsList";
 
@@ -28,10 +23,6 @@ export default async function DashboardPage() {
   } = await supabase.auth.getUser();
 
   if (!user) redirect("/auth/login");
-
-  // Get the session token to pass to the backend
-  const { data: { session } } = await supabase.auth.getSession();
-  const token = session?.access_token ?? "";
 
   return (
     <div className="flex min-h-screen flex-col bg-[#080c14]">
@@ -82,8 +73,7 @@ export default async function DashboardPage() {
           <CreateProjectDialog trigger="icon" />
         </div>
 
-        {/* Client component that fetches and displays projects */}
-        <ProjectsList token={token} />
+        <ProjectsList />
 
       </main>
     </div>

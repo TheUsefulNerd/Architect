@@ -10,6 +10,7 @@ import { FolderOpen, Clock, CheckCircle2, Circle, Trash2 } from "lucide-react";
 import { formatDate, statusColors, statusLabels } from "@/lib/utils";
 import { CreateProjectDialog } from "@/components/dashboard/CreateProjectDialog";
 import { projectsApi } from "@/lib/api";
+import { useAuth } from "@/hooks/useAuth";
 import type { ProjectResponse, ProjectStatus } from "@/types";
 
 const statusIcon: Record<ProjectStatus, React.ReactNode> = {
@@ -18,33 +19,22 @@ const statusIcon: Record<ProjectStatus, React.ReactNode> = {
   completed:   <CheckCircle2 className="h-3.5 w-3.5" />,
 };
 
-interface ProjectsListProps {
-  token: string;
-}
-
-export function ProjectsList({ token }: ProjectsListProps) {
-  const [projects, setProjects]         = useState<ProjectResponse[]>([]);
-  const [loading, setLoading]           = useState(true);
-  const [deletingId, setDeletingId]     = useState<string | null>(null);
-  const [confirmId, setConfirmId]       = useState<string | null>(null);
+export function ProjectsList() {
+  const { user, loading: authLoading } = useAuth();
+  const [projects, setProjects]     = useState<ProjectResponse[]>([]);
+  const [loading, setLoading]       = useState(true);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [confirmId, setConfirmId]   = useState<string | null>(null);
 
   useEffect(() => {
+    if (authLoading) return;
+    if (!user) { setLoading(false); return; }
+
     async function fetchProjects() {
       try {
-        const response = await fetch(
-          `${process.env.NEXT_PUBLIC_BACKEND_URL}/api/projects`,
-          {
-            headers: {
-              "Content-Type": "application/json",
-              ...(token && { Authorization: `Bearer ${token}` }),
-            },
-            cache: "no-store",
-          }
-        );
-        if (response.ok) {
-          const data = await response.json();
-          setProjects(data.projects ?? []);
-        }
+        // Uses axios interceptor — attaches Authorization + X-User-Id automatically
+        const data = await projectsApi.list();
+        setProjects(data);
       } catch {
         setProjects([]);
       } finally {
@@ -52,7 +42,7 @@ export function ProjectsList({ token }: ProjectsListProps) {
       }
     }
     fetchProjects();
-  }, [token]);
+  }, [authLoading, user]);
 
   const handleDelete = async (id: string) => {
     setDeletingId(id);
@@ -67,7 +57,7 @@ export function ProjectsList({ token }: ProjectsListProps) {
     }
   };
 
-  if (loading) {
+  if (authLoading || loading) {
     return (
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
         {[1, 2, 3].map((i) => (
@@ -143,7 +133,6 @@ export function ProjectsList({ token }: ProjectsListProps) {
           {/* Delete button — shown on hover */}
           <div className="absolute right-3 top-3">
             {confirmId === project.id ? (
-              // Confirm delete
               <div className="flex items-center gap-1.5 rounded-xl border border-red-500/20 bg-[#0d1220] p-1.5">
                 <span className="text-[10px] text-red-400">Delete?</span>
                 <button
