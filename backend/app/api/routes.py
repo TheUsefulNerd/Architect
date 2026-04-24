@@ -6,7 +6,7 @@ import json
 import logging
 from uuid import UUID
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Header
 from fastapi.responses import StreamingResponse
 
 from app.agents.graph import run_graph, run_graph_stream

@@ -93,36 +93,32 @@ export function useChat() {
 
         // onDone
         async () => {
-          // Finalise the last node's message
           finaliseCurrentNode();
           useProjectStore.getState().setStreaming(false);
 
-          // After everything completes — fetch roadmap and any remaining data
           if (activeSession) {
             try {
-              await new Promise(resolve => setTimeout(resolve, 800));
-
-              const [sessionData, docs, scaffolds] = await Promise.all([
+              // Fetch session + docs immediately — these are ready
+              const [sessionData, docs] = await Promise.all([
                 sessionsApi.getById(activeSession.id),
                 sessionsApi.getDocLinks(activeSession.id),
-                sessionsApi.getScaffolds(activeSession.id),
               ]);
 
-              // Update roadmap
               const graphState = sessionData?.metadata?.graph_state as Record<string, unknown> | undefined;
               const roadmap = (graphState?.roadmap as RoadmapStep[]) ?? [];
-              if (roadmap.length > 0) {
-                useProjectStore.getState().setRoadmap(roadmap);
-              }
+              if (roadmap.length > 0) useProjectStore.getState().setRoadmap(roadmap);
+              if (docs.length > 0) useProjectStore.getState().setDocLinks(docs);
 
-              // Update docs if not already set
-              if (docs.length > 0) {
-                useProjectStore.getState().setDocLinks(docs);
-              }
-
-              // Update scaffolds if not already set
-              if (scaffolds.length > 0) {
-                useProjectStore.getState().setScaffolds(scaffolds);
+              // Retry scaffold fetch up to 5 times with increasing delays
+              // Supabase write may not be committed yet when SSE done fires
+              const delays = [500, 1000, 2000, 3000, 4000];
+              for (const delay of delays) {
+                await new Promise(resolve => setTimeout(resolve, delay));
+                const scaffolds = await sessionsApi.getScaffolds(activeSession.id);
+                if (scaffolds.length > 0) {
+                  useProjectStore.getState().setScaffolds(scaffolds);
+                  break;
+                }
               }
             } catch {
               // silently fail
